@@ -63,6 +63,7 @@ $$("#tabs button").forEach((btn) => {
     if (btn.dataset.tab === "map" && window.DayZMap) DayZMap.refreshSize();
     if (btn.dataset.tab === "server") refreshServerStatus();
     if (btn.dataset.tab === "loot" && !Loot.loaded) Loot.load();
+    if (btn.dataset.tab === "tools" && window.Tools) Tools.init();
   });
 });
 

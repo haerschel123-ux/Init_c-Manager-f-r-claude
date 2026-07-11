@@ -17,6 +17,7 @@
     <button data-tab="files">📁 Dateien</button>
     <button data-tab="loot">🎒 Loot</button>
     <button data-tab="server">🖥️ Server</button>
+    <button data-tab="tools">🧰 Tools</button>
   </nav>
   <div class="header-right">
     <span id="status-pill" class="pill">…</span>
@@ -146,6 +147,61 @@
   </div>
 </main>
 
+<!-- ============================== Tools ============================== -->
+<main id="tab-tools" class="tab">
+  <div class="tools-wrap">
+    <div id="tools-home">
+      <p class="hint">Fertige Generatoren für beliebte Server-Anpassungen.
+        Ablauf: konfigurieren → <b>🔍 Vorschau</b> (zeigt genau, welche Datei
+        sich wie ändert) → <b>Übernehmen</b> → unten <b>💾 Speichern</b> →
+        Server neu starten, fertig.</p>
+      <div id="tools-grid"></div>
+    </div>
+    <div id="tool-panel" class="hidden">
+      <div class="tool-head">
+        <button id="btn-tool-back" class="small">← Alle Tools</button>
+        <h2 id="tool-title"></h2>
+      </div>
+      <p id="tool-desc" class="hint"></p>
+      <div id="tool-form"></div>
+      <div class="btn-row">
+        <button id="btn-tool-preview" class="primary">🔍 Vorschau</button>
+      </div>
+    </div>
+  </div>
+  <div id="staging-bar" class="hidden">
+    <span id="staging-info"></span>
+    <button id="btn-staging-save" class="primary">💾 Speichern</button>
+    <button id="btn-staging-clear" class="small">Verwerfen</button>
+  </div>
+</main>
+
+<!-- ======================= Tool-Vorschau (Modal) ====================== -->
+<div id="preview-overlay" class="overlay hidden">
+  <div class="dialog wide">
+    <h2>🔍 Vorschau der Änderungen</h2>
+    <div id="preview-files"></div>
+    <div class="btn-row">
+      <button id="btn-preview-apply" class="primary">✔ Übernehmen</button>
+      <button id="btn-preview-cancel">Abbrechen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Karten-Picker (Modal) ======================== -->
+<div id="mappick-overlay" class="overlay hidden">
+  <div class="dialog wide">
+    <h2 id="mappick-title">🗺️ Position(en) wählen</h2>
+    <p class="hint">Auf die Karte tippen = Punkt setzen · Marker ziehen =
+      verschieben · Marker antippen = löschen</p>
+    <div id="mappick-map"></div>
+    <div class="btn-row">
+      <button id="btn-mappick-ok" class="primary">✔ Übernehmen</button>
+      <button id="btn-mappick-cancel">Abbrechen</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============================ Einrichtung =========================== -->
 <div id="setup-overlay" class="overlay hidden">
   <div class="dialog">
@@ -201,5 +257,6 @@
 <script src="app.js"></script>
 <script src="map.js"></script>
 <script src="editor.js"></script>
+<script src="tools.js"></script>
 </body>
 </html>

@@ -382,3 +382,16 @@ const DayZMap = {
 };
 
 window.DayZMap = DayZMap;
+
+/* Gemeinsame Karten-Bausteine für andere Module (z.B. Mini-Karte im
+ * Tools-Tab), damit CRS/Kacheln/Gitter nicht dupliziert werden müssen. */
+window.DayZMapShared = {
+  WORLD,
+  TILES_TOPO,
+  GridBackdrop,
+  makeCrs() {
+    return L.extend({}, L.CRS.Simple, {
+      transformation: new L.Transformation(256 / WORLD, 0, -256 / WORLD, 256),
+    });
+  },
+};
