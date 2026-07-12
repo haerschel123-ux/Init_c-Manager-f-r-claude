@@ -260,6 +260,26 @@ ${kids}
     }
   }
 
+  /* Datei als XML-Dokument lesen – null bei "fehlt" oder Parse-Fehler.
+     (Vorbelegungen sind optional und dürfen das Tool nie blockieren.) */
+  async function readXmlOrNull(path) {
+    try {
+      const text = await readOrNull(path);
+      return text ? parseXml(text) : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  async function readJsonOrNull(path) {
+    try {
+      const text = await readOrNull(path);
+      return text ? JSON.parse(text) : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
   let itemCache = null;
   async function itemNames() {
     if (!itemCache) {
@@ -288,6 +308,15 @@ ${kids}
 
   function field(label, input) {
     return h("div", { class: "field" }, h("label", { class: "fl" }, label), input);
+  }
+
+  /* Auswahl "Neu anlegen oder vorhandenen Eintrag bearbeiten": Dropdown mit
+     allen vorhandenen Einträgen; bei Auswahl füllt onPick das Formular. */
+  function loadPicker(newLabel, names, onPick) {
+    const sel = h("select", {}, h("option", { value: "" }, newLabel));
+    for (const n of names) sel.append(h("option", { value: n }, n));
+    sel.addEventListener("change", () => onPick(sel.value));
+    return field("Neu oder bearbeiten?", sel);
   }
 
   function textInput(id, value, placeholder, datalist) {
@@ -357,6 +386,10 @@ ${kids}
       item: r.dataset.type, num: num(r.querySelector(".num").value, 3),
     }));
     wrap.add = addZombie;
+    wrap.setValues = (list) => {
+      rows.innerHTML = "";
+      (list || []).forEach((z) => addZombie(z.item, z.num));
+    };
     return wrap;
   }
 
@@ -643,8 +676,42 @@ ${kids}
 
   registry.push({
     id: "loadout", icon: "🧍", title: "Loadout Generator",
-    desc: "Start-Ausrüstung für frisch gespawnte Spieler festlegen – Kleidung pro Slot plus Items im Inventar. (Funktioniert ab DayZ 1.20 auch auf Konsole.)",
-    render(form) {
+    desc: "Start-Ausrüstung für frisch gespawnte Spieler festlegen – neu anlegen oder vorhandene Presets bearbeiten. (Funktioniert ab DayZ 1.20 auch auf Konsole.)",
+    async render(form) {
+      this._file = null;
+      const gameplay = await readJsonOrNull(mission("cfggameplay.json"));
+      const files = (gameplay && gameplay.PlayerData &&
+                     gameplay.PlayerData.spawnGearPresetFiles) || [];
+      form.append(loadPicker("– Neues Preset erstellen –", files, async (file) => {
+        this._file = file || null;
+        if (!file) return;
+        const preset = await readJsonOrNull(mission(file));
+        if (!preset) return toast("Preset „" + file + "“ konnte nicht geladen werden.", "error");
+        $("#lo-name").value = preset.name || file.replace(/\.json$/i, "");
+        for (const [slot] of SLOTS) $("#lo-slot-" + slot).value = "";
+        for (const set of preset.attachmentSlotItemSets || []) {
+          const input = $("#lo-slot-" + set.slotName);
+          const first = (set.discreteItemSets || [])[0];
+          if (input && first && first.itemType) input.value = first.itemType;
+        }
+        const counts = new Map();
+        for (const set of preset.discreteUnsortedItemSets || [])
+          for (const it of set.simpleChildrenTypes || [])
+            counts.set(it, (counts.get(it) || 0) + 1);
+        const fresh = itemList({ numLabel: "Anzahl", numDefault: 1,
+          initial: counts.size ? Array.from(counts) : [["", undefined]] });
+        this.invList.replaceWith(fresh);
+        this.invList = fresh;
+        const attrs =
+          ((preset.attachmentSlotItemSets || [])[0]?.discreteItemSets?.[0]?.attributes) ||
+          ((preset.discreteUnsortedItemSets || [])[0]?.attributes);
+        if (attrs) {
+          const v = attrs.healthMin + "," + attrs.healthMax;
+          if (Array.from($("#lo-health").options).some((o) => o.value === v))
+            $("#lo-health").value = v;
+        }
+        toast("Preset geladen – anpassen und Vorschau öffnen.");
+      }));
       form.append(field("Name des Presets",
         textInput("lo-name", "MeinLoadout")));
       const grp = h("div", { class: "grp" }, h("h4", {}, "Kleidung (leer = Standard-Zufall)"));
@@ -667,7 +734,10 @@ ${kids}
     },
     async generate() {
       const name = $("#lo-name").value.trim() || "MeinLoadout";
-      const fileName = "custom_spawngear.json";
+      // Beim Bearbeiten dieselbe Datei behalten, sonst Namen aus dem Preset ableiten
+      const fileName = this._file ||
+        "custom_" + ((name.toLowerCase().replace(/[^a-z0-9_-]+/g, "_")
+          .replace(/^_+|_+$/g, "")) || "loadout") + ".json";
       const [hMin, hMax] = $("#lo-health").value.split(",").map(Number);
       const slotSets = [];
       for (const [slot] of SLOTS) {
@@ -729,8 +799,29 @@ ${kids}
 
   registry.push({
     id: "gaszone", icon: "☣️", title: "Gas-Zonen Builder",
-    desc: "Statische Kontaminationszonen (wie Rify/Pavlovo) platzieren – mit Partikel-Effekt und sicheren Teleport-Punkten für Spieler, die in der Zone einloggen.",
-    render(form) {
+    desc: "Statische Kontaminationszonen (wie Rify/Pavlovo) neu anlegen oder vorhandene bearbeiten – mit Partikel-Effekt und sicheren Teleport-Punkten für Spieler, die in der Zone einloggen.",
+    async render(form) {
+      const eff = await readJsonOrNull(mission("cfgeffectarea.json"));
+      const areas = (eff && Array.isArray(eff.Areas)) ? eff.Areas : [];
+      form.append(loadPicker("– Neue Gaszone erstellen –",
+        areas.map((a) => a.AreaName).filter(Boolean), (name) => {
+        const area = areas.find((a) => a.AreaName === name);
+        if (!area) return;
+        const d = area.Data || {};
+        $("#gz-name").value = area.AreaName;
+        $("#gz-radius").value = d.Radius ?? 150;
+        $("#gz-posheight").value = d.PosHeight ?? 20;
+        $("#gz-negheight").value = d.NegHeight ?? 3;
+        $("#gz-innerpart").value = d.InnerPartDist ?? 100;
+        $("#gz-outeroffset").value = d.OuterOffset ?? 20;
+        if (Array.from($("#gz-particle").options).some((o) => o.value === d.ParticleName))
+          $("#gz-particle").value = d.ParticleName;
+        const p = d.Pos || [0, 0, 0];
+        this.pos.setValues([{ x: p[0], z: p[2] }]);
+        this.safe.setValues((Array.isArray(eff.SafePositions) ? eff.SafePositions : [])
+          .map(([x, z]) => ({ x, z })));
+        toast("Gaszone „" + name + "“ geladen – anpassen und Vorschau öffnen.");
+      }));
       form.append(field("Name der Zone", textInput("gz-name", "MeineGasZone")));
       form.append(h("div", { class: "grp" },
         h("h4", {}, "Zonen-Eigenschaften"),
@@ -810,8 +901,18 @@ ${kids}
 
   registry.push({
     id: "horde", icon: "🧟", title: "Zombie-Horden Generator",
-    desc: "Feste Zombie-Horden an Wunschpositionen – Zombie-Typen bequem per Liste auswählen, Bewegungsverhalten und Zonen-Radius einstellbar.",
-    render(form) {
+    desc: "Feste Zombie-Horden an Wunschpositionen – neu anlegen oder vorhandene bearbeiten. Zombie-Typen bequem per Liste auswählen, Bewegungsverhalten und Zonen-Radius einstellbar.",
+    async render(form) {
+      this._evDoc = await readXmlOrNull(mission("db/events.xml"));
+      this._spDoc = await readXmlOrNull(mission("cfgeventspawns.xml"));
+      const hordes = [];
+      if (this._evDoc) this._evDoc.querySelectorAll("events > event").forEach((ev) => {
+        const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
+        if (kids.length && kids.every((c) => (c.getAttribute("type") || "").startsWith("Zmb")))
+          hordes.push(ev.getAttribute("name"));
+      });
+      form.append(loadPicker("– Neue Horde erstellen –", hordes,
+        (name) => this.fillFrom(name)));
       form.append(field("Name der Horde", textInput("hd-name", "InfectedHorde")));
       this.zombies = zombiePicker();
       this.zombies.add("ZmbM_SoldierNormal", 5);
@@ -831,6 +932,44 @@ ${kids}
         field("Loot pro Zombie (min/max)",
           h("span", { class: "row" }, numInput("hd-lootmin", 0), numInput("hd-lootmax", 0))),
         field("Cleanupradius", numInput("hd-cleanup", 400))));
+    },
+    fillFrom(name) {
+      if (!name || !this._evDoc) return;
+      const ev = this._evDoc.querySelector(`event[name="${name}"]`);
+      if (!ev) return;
+      const get = (f, dflt) => {
+        const el = ev.querySelector(":scope > " + f);
+        return el ? el.textContent.trim() : dflt;
+      };
+      $("#hd-name").value = name;
+      $("#hd-lifetime").value = get("lifetime", 300);
+      $("#hd-cleanup").value = get("cleanupradius", 400);
+      const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
+      this.zombies.setValues(kids.map((c) => ({
+        item: c.getAttribute("type"),
+        num: Number(c.getAttribute("max")) || 1,
+      })));
+      if (kids[0]) {
+        $("#hd-lootmin").value = kids[0].getAttribute("lootmin") || 0;
+        $("#hd-lootmax").value = kids[0].getAttribute("lootmax") || 0;
+      }
+      if (this._spDoc) {
+        const zones = Array.from(this._spDoc.querySelectorAll(`event[name="${name}"] > zone`));
+        if (zones.length) {
+          const z0 = zones[0];
+          $("#hd-radius").value = Number(z0.getAttribute("r")) || 25;
+          const smin = Number(z0.getAttribute("smin")) || 0;
+          const smax = Number(z0.getAttribute("smax")) || 0;
+          const style = Object.entries(HORDE_MOVEMENT).find(
+            ([, m]) => m.smin === smin && m.smax === smax);
+          $("#hd-move").value = style ? style[0] : "stationary";
+        }
+        this.pos.setValues(zones.map((z) => ({
+          x: Number(z.getAttribute("x")) || 0,
+          z: Number(z.getAttribute("z")) || 0,
+        })));
+      }
+      toast("Horde „" + name + "“ geladen – anpassen und Vorschau öffnen.");
     },
     async generate() {
       const name = $("#hd-name").value.trim() || "InfectedHorde";
@@ -907,18 +1046,31 @@ ${kids}
         h("p", { class: "hint" }, "Werden zu den vorhandenen Vanilla-Positionen hinzugefügt."),
         this.pos));
       // Aktuelle Werte aus events.xml vorbelegen
-      try {
-        const text = await readOrNull(mission("db/events.xml"));
-        if (text) {
-          const ev = parseXml(text).querySelector('event[name="StaticHeliCrash"]');
-          if (ev) {
-            for (const f of ["nominal", "min", "max"]) {
-              const el = ev.querySelector(":scope > " + f);
-              if (el) $("#hl-" + f).value = el.textContent.trim();
-            }
-          }
+      const evDoc = await readXmlOrNull(mission("db/events.xml"));
+      const ev = evDoc && evDoc.querySelector('event[name="StaticHeliCrash"]');
+      if (ev) {
+        for (const f of ["nominal", "min", "max"]) {
+          const el = ev.querySelector(":scope > " + f);
+          if (el) $("#hl-" + f).value = el.textContent.trim();
         }
-      } catch (err) { /* Vorbelegung optional */ }
+      }
+      // Aktuellen Wreck-Loot aus cfgspawnabletypes.xml zum Bearbeiten laden
+      const stDoc = await readXmlOrNull(mission("cfgspawnabletypes.xml"));
+      const node = stDoc && stDoc.querySelector('type[name="Wreck_UH1Y"]');
+      if (node) {
+        const rows = Array.from(node.querySelectorAll(":scope > attachments, :scope > cargo"))
+          .map((b) => {
+            const item = b.querySelector("item");
+            return [item ? item.getAttribute("name") : "",
+                    Math.round((Number(b.getAttribute("chance")) || 0) * 100)];
+          }).filter(([i]) => i);
+        if (rows.length) {
+          const fresh = itemList({ numLabel: "Chance %", numDefault: 30, step: "1",
+                                   initial: rows });
+          this.loot.replaceWith(fresh);
+          this.loot = fresh;
+        }
+      }
     },
     async generate() {
       const loot = this.loot.values();
@@ -997,19 +1149,40 @@ ${kids}
 
   registry.push({
     id: "vehicle", icon: "🚗", title: "Fahrzeug-Builder",
-    desc: "Fahrzeuge an Wunschpositionen spawnen – auf Wunsch komplett fahrbereit mit allen Teilen.",
-    render(form) {
+    desc: "Fahrzeuge an Wunschpositionen spawnen – neue Fahrzeug-Events anlegen oder vorhandene laden und bearbeiten. Auf Wunsch komplett fahrbereit mit allen Teilen.",
+    async render(form) {
+      this._evDoc = await readXmlOrNull(mission("db/events.xml"));
+      this._spDoc = await readXmlOrNull(mission("cfgeventspawns.xml"));
+      this._stDoc = await readXmlOrNull(mission("cfgspawnabletypes.xml"));
+      this._nameTouched = false;
+      const vehEvents = [];
+      if (this._evDoc) this._evDoc.querySelectorAll("events > event").forEach((ev) => {
+        const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
+        if (kids.some((c) => VEHICLES[c.getAttribute("type")]))
+          vehEvents.push(ev.getAttribute("name"));
+      });
+      form.append(loadPicker("– Neues Fahrzeug-Event erstellen –", vehEvents,
+        (name) => this.fillFrom(name)));
       const sel = h("select", { id: "vh-type" });
       for (const [type, info] of Object.entries(VEHICLES))
         sel.append(h("option", { value: type }, info.label + " – " + type));
       form.append(field("Fahrzeug", sel));
+      const autoName = () => "Vehicle" + sel.value.replace(/_/g, "");
+      const nameInput = textInput("vh-name", autoName());
+      nameInput.addEventListener("input", () => { this._nameTouched = true; });
+      form.append(field("Event-Name (db/events.xml)", nameInput));
+      form.append(h("p", { class: "hint" },
+        "Gleicher Name = vorhandenes Event wird bearbeitet, " +
+        "neuer Name = neues Event wird angelegt."));
       form.append(h("div", { class: "row" },
         "nominal:", numInput("vh-nominal", 3),
         "min:", numInput("vh-min", 2), "max:", numInput("vh-max", 4)));
       this.pos = posList({ angle: true });
       form.append(h("div", { class: "grp" },
         h("h4", {}, "Spawnpositionen"),
-        h("p", { class: "hint" }, "Ersetzt die bisherigen Positionen dieses Fahrzeug-Events."),
+        field("Positions-Modus", h("select", { id: "vh-posmode" },
+          h("option", { value: "replace" }, "Vorhandene Positionen ersetzen"),
+          h("option", { value: "append" }, "Zu vorhandenen Positionen hinzufügen"))),
         this.pos));
       const fit = h("div", { class: "grp" },
         h("h4", {}, h("label", {},
@@ -1024,12 +1197,61 @@ ${kids}
         this.parts.replaceWith(fresh);
         this.parts = fresh;
       };
-      sel.addEventListener("change", fillParts);
+      sel.addEventListener("change", () => {
+        if (!this._nameTouched) nameInput.value = autoName();
+        fillParts();
+      });
       fillParts();
+    },
+    fillFrom(name) {
+      if (!name || !this._evDoc) return;
+      const ev = this._evDoc.querySelector(`event[name="${name}"]`);
+      if (!ev) return;
+      const get = (f, dflt) => {
+        const el = ev.querySelector(":scope > " + f);
+        return el ? el.textContent.trim() : dflt;
+      };
+      const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
+      const child = kids.find((c) => VEHICLES[c.getAttribute("type")]);
+      const type = child ? child.getAttribute("type") : "";
+      if (type) $("#vh-type").value = type;
+      $("#vh-name").value = name;
+      this._nameTouched = true;   // geladener Name bleibt beim Fahrzeugwechsel stehen
+      $("#vh-nominal").value = get("nominal", 3);
+      $("#vh-min").value = get("min", 2);
+      $("#vh-max").value = get("max", 4);
+      // Verbaute Teile aus cfgspawnabletypes.xml übernehmen
+      const typeNode = type && this._stDoc &&
+        this._stDoc.querySelector(`type[name="${type}"]`);
+      $("#vh-fit").checked = !!typeNode;
+      if (typeNode) {
+        const counts = new Map();
+        typeNode.querySelectorAll(":scope > attachments > item, :scope > cargo > item")
+          .forEach((it) => {
+            const n = it.getAttribute("name");
+            if (n) counts.set(n, (counts.get(n) || 0) + 1);
+          });
+        const fresh = itemList({ numLabel: "Anzahl", numDefault: 1,
+                                 initial: Array.from(counts) });
+        this.parts.replaceWith(fresh);
+        this.parts = fresh;
+      }
+      // Vorhandene Positionen aus cfgeventspawns.xml laden
+      if (this._spDoc) {
+        this.pos.setValues(Array.from(
+          this._spDoc.querySelectorAll(`event[name="${name}"] > pos`)).map((p) => ({
+            x: Number(p.getAttribute("x")) || 0,
+            z: Number(p.getAttribute("z")) || 0,
+            a: Number(p.getAttribute("a")) || 0,
+          })));
+      }
+      toast("Event „" + name + "“ geladen – anpassen und Vorschau öffnen.");
     },
     async generate() {
       const type = $("#vh-type").value;
-      const eventName = "Vehicle" + type.replace(/_/g, "");
+      const eventName = $("#vh-name").value.trim() ||
+        ("Vehicle" + type.replace(/_/g, ""));
+      const posMode = $("#vh-posmode").value;
       const positions = this.pos.values();
       if (!positions.length) throw new Error("Bitte mindestens eine Position angeben.");
       const nominal = num($("#vh-nominal").value, 3);
@@ -1055,10 +1277,12 @@ ${kids}
         },
         {
           path: mission("cfgeventspawns.xml"),
-          summary: [positions.length + " Spawnposition(en) für " + eventName + "."],
+          summary: [positions.length + " Spawnposition(en) für " + eventName +
+                    (posMode === "append" ? " (zusätzlich zu vorhandenen)."
+                                          : " (ersetzt vorhandene).")],
           transform: (current) => {
             if (current === null) throw new Error("cfgeventspawns.xml wurde auf dem Server nicht gefunden.");
-            return upsertEventspawns(current, eventName, positions, "replace").text;
+            return upsertEventspawns(current, eventName, positions, posMode).text;
           },
         },
       ];
@@ -1088,8 +1312,35 @@ ${kids}
 
   registry.push({
     id: "spawnable", icon: "🎒", title: "Inhalte & Aufsätze",
-    desc: "Bestimmen, womit ein Item spawnt: Waffen mit Aufsätzen, Rucksäcke mit Inhalt, Zombies mit Loot in den Taschen. (cfgspawnabletypes.xml)",
-    render(form) {
+    desc: "Bestimmen, womit ein Item spawnt: Waffen mit Aufsätzen, Rucksäcke mit Inhalt, Zombies mit Loot in den Taschen – neu anlegen oder vorhandene Einträge bearbeiten. (cfgspawnabletypes.xml)",
+    async render(form) {
+      this._doc = await readXmlOrNull(mission("cfgspawnabletypes.xml"));
+      const names = this._doc
+        ? Array.from(this._doc.querySelectorAll("spawnabletypes > type"))
+            .map((t) => t.getAttribute("name")).filter(Boolean)
+        : [];
+      form.append(loadPicker("– Neuen Eintrag erstellen –", names, (name) => {
+        const node = this._doc && this._doc.querySelector(`type[name="${name}"]`);
+        if (!node) return;
+        $("#sp-target").value = name;
+        const collect = (kind) =>
+          Array.from(node.querySelectorAll(":scope > " + kind)).map((b) => {
+            const item = b.querySelector("item");
+            return [item ? item.getAttribute("name") : "",
+                    Math.round((Number(b.getAttribute("chance")) || 0) * 100)];
+          }).filter(([i]) => i);
+        const attRows = collect("attachments");
+        const cargoRows = collect("cargo");
+        const freshAtt = itemList({ numLabel: "Chance %", numDefault: 100,
+          initial: attRows.length ? attRows : [["", undefined]] });
+        this.att.replaceWith(freshAtt);
+        this.att = freshAtt;
+        const freshCargo = itemList({ numLabel: "Chance %", numDefault: 100,
+          initial: cargoRows.length ? cargoRows : [["", undefined]] });
+        this.cargo.replaceWith(freshCargo);
+        this.cargo = freshCargo;
+        toast("Eintrag „" + name + "“ geladen – anpassen und Vorschau öffnen.");
+      }));
       form.append(field("Ziel (Waffe / Tasche / Zombie / Container)",
         textInput("sp-target", "", "z.B. AKM, ZmbM_SoldierNormal…", "dl-items")));
       const att = h("div", { class: "grp" }, h("h4", {}, "Aufsätze / Anbauteile (attachments)"));
@@ -1174,17 +1425,15 @@ ${kids}
         h("h4", {}, "Feste Positionen (optional, ersetzt vorhandene)"), this.pos));
 
       // Vorhandene Events zum Laden anbieten
-      try {
-        const text = await readOrNull(mission("db/events.xml"));
-        if (text) {
-          this._eventsDoc = parseXml(text);
-          this._eventsDoc.querySelectorAll("events > event").forEach((ev) => {
-            loadSel.append(h("option", { value: ev.getAttribute("name") },
-              ev.getAttribute("name")));
-          });
-          loadSel.addEventListener("change", () => this.fillFrom(loadSel.value));
-        }
-      } catch (err) { /* optional */ }
+      this._eventsDoc = await readXmlOrNull(mission("db/events.xml"));
+      this._spawnsDoc = await readXmlOrNull(mission("cfgeventspawns.xml"));
+      if (this._eventsDoc) {
+        this._eventsDoc.querySelectorAll("events > event").forEach((ev) => {
+          loadSel.append(h("option", { value: ev.getAttribute("name") },
+            ev.getAttribute("name")));
+        });
+        loadSel.addEventListener("change", () => this.fillFrom(loadSel.value));
+      }
     },
     fillFrom(name) {
       if (!name || !this._eventsDoc) return;
@@ -1218,6 +1467,15 @@ ${kids}
           (c) => [c.getAttribute("type"), Number(c.getAttribute("max")) || 1]) });
       this.children.replaceWith(fresh);
       this.children = fresh;
+      // Vorhandene Positionen aus cfgeventspawns.xml übernehmen
+      if (this._spawnsDoc) {
+        this.pos.setValues(Array.from(
+          this._spawnsDoc.querySelectorAll(`event[name="${name}"] > pos`)).map((p) => ({
+            x: Number(p.getAttribute("x")) || 0,
+            z: Number(p.getAttribute("z")) || 0,
+            a: Number(p.getAttribute("a")) || 0,
+          })));
+      }
       toast("Event „" + name + "“ geladen – Werte anpassen und Vorschau öffnen.");
     },
     async generate() {
@@ -1274,6 +1532,27 @@ ${kids}
 
   let initialized = false;
 
+  /* Nach einem Kartenwechsel hängen alle Daten am neuen Missionsordner:
+     Caches leeren, Vormerkungen verwerfen, offenes Formular schließen. */
+  function onMissionChanged() {
+    itemCache = null;
+    ["dl-items", "dl-zmb"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    });
+    if (staged.length) {
+      staged.length = 0;
+      updateStagingBar();
+      toast("Vorgemerkte Änderungen verworfen – sie gehörten zur vorherigen Karte.", "warn");
+    }
+    if (initialized && currentTool) {
+      $("#tool-panel").classList.add("hidden");
+      $("#tools-home").classList.remove("hidden");
+      currentTool = null;
+    }
+    if (initialized) ensureDatalists();
+  }
+
   function init() {
     if (initialized) return;
     initialized = true;
@@ -1327,9 +1606,10 @@ ${kids}
     }
   }
 
-  return { init, registry, _test: { upsertEvent, upsertEventspawns,
-                                    upsertSpawnableType, updateEventCounts,
-                                    lineDiff } };
+  return { init, registry, onMissionChanged,
+           _test: { upsertEvent, upsertEventspawns,
+                    upsertSpawnableType, updateEventCounts,
+                    lineDiff } };
 })();
 
 window.Tools = Tools;

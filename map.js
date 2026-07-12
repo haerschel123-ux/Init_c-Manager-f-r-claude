@@ -175,16 +175,38 @@ const DayZMap = {
     if (window.App && App.state.tile_url) this.applyTiles(App.state.tile_url);
   },
 
-  /* Karte wechseln (chernarusplus | enoch | sakhal) */
-  setMap(key, persist) {
+  /* Karte wechseln (chernarusplus | enoch | sakhal). Wechselt auch den
+     Missionsordner auf dem Server mit – existiert der Ordner der Karte
+     dort nicht, wird die Auswahl zurückgedreht (Pfad-Sicherheit). */
+  async setMap(key, persist) {
     if (!MAPS[key] || key === this.mapKey) { this.updateSwitchButtons(); return; }
+    const before = this.mapKey;
     this.mapKey = key;
     this.buildMap();
     this.redraw();
     this.updateSwitchButtons();
-    if (persist !== false) {
-      api("/api/settings", { map: key }).catch(() => {});
-      if (window.App) App.state.map = key;
+    if (persist === false) return;
+    if (!window.App || !App.state.configured) return;
+    try {
+      App.state = await api("/api/settings", { map: key });
+      if (App.state.mission_dir)
+        toast("Karte gewechselt – benutze jetzt: " + App.state.mission_dir);
+      // Alles neu laden, was am Missionsordner hängt
+      this.loadData();
+      if (window.Loot) {
+        Loot.changes = {};
+        Loot.loaded = false;
+        Loot.updateBar();
+        if ($("#tab-loot").classList.contains("active")) Loot.load();
+      }
+      if (window.Tools && Tools.onMissionChanged) Tools.onMissionChanged();
+      if (window.Files && App.state.mission_dir) Files.openDir(App.state.mission_dir);
+    } catch (err) {
+      toast(err.message, "error");
+      this.mapKey = before;
+      this.buildMap();
+      this.redraw();
+      this.updateSwitchButtons();
     }
   },
 

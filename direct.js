@@ -378,33 +378,88 @@ const DirectMode = (() => {
 
   /* ------------------------------------------------------------- Setup */
 
-  async function findMissionDir(token, serviceId, start, depth) {
+  /* Alle Missionsordner (dayzOffline.*) finden. Sie liegen als Geschwister
+     im selben missions-Ordner, deshalb endet die Suche beim ersten Fund. */
+  async function findMissionDirs(token, serviceId, start, depth) {
     let entries;
     try {
       entries = await fileList(token, serviceId, start);
     } catch (e) {
-      return null;
+      return [];
     }
     const dirs = entries.filter((e) => e.type === "dir");
-    for (const entry of dirs) {
-      if ((entry.name || "").startsWith("dayzOffline.")) {
-        return entry.path || (start.replace(/\/$/, "") + "/" + entry.name);
-      }
-    }
-    if (depth <= 0) return null;
+    const found = dirs
+      .filter((e) => (e.name || "").startsWith("dayzOffline."))
+      .map((e) => e.path || (start.replace(/\/$/, "") + "/" + e.name));
+    if (found.length) return found;
+    if (depth <= 0) return [];
     dirs.sort((a, b) => (a.name.includes("missions") ? -1 : 0) - (b.name.includes("missions") ? -1 : 0));
     for (const entry of dirs) {
       const path = entry.path || (start.replace(/\/$/, "") + "/" + entry.name);
-      const found = await findMissionDir(token, serviceId, path, depth - 1);
-      if (found) return found;
+      const deeper = await findMissionDirs(token, serviceId, path, depth - 1);
+      if (deeper.length) return deeper;
     }
-    return null;
+    return [];
+  }
+
+  /* Karten-Schlüssel (chernarusplus/enoch/sakhal) aus einem Missionspfad */
+  const mapKeyOf = (dir) => {
+    const m = /dayzoffline\.([a-z0-9_]+)/i.exec(dir || "");
+    return m ? m[1].toLowerCase() : "";
+  };
+
+  /* Aktive Mission aus den Nitrado-Serverdaten erkennen: zuerst in den
+     expliziten Einstellungen (settings.config) suchen, dann überall. */
+  function detectActiveMission(gs, missionDirs) {
+    let name = null;
+    const conf = (gs.settings && gs.settings.config) || {};
+    for (const key of Object.keys(conf)) {
+      const m = /dayzoffline\.[a-z0-9_]+/i.exec(String(conf[key] || ""));
+      if (m) { name = m[0]; break; }
+    }
+    if (!name) {
+      try {
+        const m = /dayzoffline\.[a-z0-9_]+/i.exec(JSON.stringify(gs));
+        if (m) name = m[0];
+      } catch (e) { /* dann eben nicht */ }
+    }
+    if (!name) return null;
+    const want = name.toLowerCase();
+    return missionDirs.find((d) =>
+      (d.split("/").pop() || "").toLowerCase() === want) || null;
+  }
+
+  /* Missionsordner zu einem Karten-Schlüssel. Sicherheit: gewechselt wird
+     nur, wenn der Ordner der Karte auf dem Server wirklich existiert. */
+  async function missionDirForMap(key) {
+    const want = "dayzoffline." + key.toLowerCase();
+    const match = (dirs) => (dirs || []).find((d) =>
+      (d.split("/").pop() || "").toLowerCase() === want);
+    let dir = match(cfg.mission_dirs);
+    if (dir) return dir;
+    // Liste fehlt (ältere Einrichtung): neben dem aktuellen Ordner nachsehen …
+    const parent = (cfg.mission_dir || "").split("/").slice(0, -1).join("/");
+    if (parent) {
+      const siblings = await findMissionDirs(cfg.token, cfg.service_id, parent, 0);
+      if (siblings.length) { cfg.mission_dirs = siblings; saveCfg(); }
+      dir = match(siblings);
+      if (dir) return dir;
+    }
+    // … sonst komplette Suche ab dem Spielordner
+    const all = await findMissionDirs(cfg.token, cfg.service_id, cfg.root_dir, 4);
+    if (all.length) { cfg.mission_dirs = all; saveCfg(); }
+    dir = match(all);
+    if (dir) return dir;
+    throw new Error("Auf dem Server wurde kein Missionsordner „dayzOffline." + key +
+                    "“ gefunden – diese Karte ist dort anscheinend nicht " +
+                    "installiert. Der bisherige Ordner bleibt aktiv.");
   }
 
   function state() {
     const configured = !!(cfg.token && cfg.mission_dir);
     const st = { configured, demo: false, direct: true,
-                 tile_url: cfg.tile_url || "", map: cfg.map || "" };
+                 tile_url: cfg.tile_url || "",
+                 map: cfg.map || mapKeyOf(cfg.mission_dir) || "" };
     if (configured) {
       st.mission_dir = cfg.mission_dir;
       st.root_dir = cfg.root_dir;
@@ -451,16 +506,19 @@ const DirectMode = (() => {
           `/services/${body.service_id}/gameservers`);
         const gs = (gsData.data && gsData.data.gameserver) || {};
         const root = `/games/${gs.username}/noftp/${gs.game}`;
-        let mission = await findMissionDir(body.token, body.service_id, root, 4);
-        if (!mission) mission = await findMissionDir(body.token, body.service_id,
-          `/games/${gs.username}`, 4);
-        if (!mission) {
+        let missions = await findMissionDirs(body.token, body.service_id, root, 4);
+        if (!missions.length) missions = await findMissionDirs(body.token,
+          body.service_id, `/games/${gs.username}`, 4);
+        if (!missions.length) {
           throw new Error("Konnte den Missionsordner (dayzOffline.*) nicht " +
                           "automatisch finden. Ist das wirklich ein DayZ-Server?");
         }
+        // Aktive Karte des Servers erkennen – sonst den ersten Fund nehmen
+        const mission = detectActiveMission(gs, missions) || missions[0];
         cfg = { token: body.token, service_id: body.service_id, game: gs.game,
-                username: gs.username, root_dir: root, mission_dir: mission,
-                tile_url: cfg.tile_url || "" };
+                username: gs.username, root_dir: root,
+                mission_dir: mission, mission_dirs: missions,
+                map: mapKeyOf(mission), tile_url: cfg.tile_url || "" };
         saveCfg();
         return state();
       }
@@ -468,7 +526,14 @@ const DirectMode = (() => {
       case "/api/settings":
         // Nur mitgeschickte Felder ändern (Teil-Update)
         if ("tile_url" in body) cfg.tile_url = String(body.tile_url || "").trim();
-        if ("map" in body) cfg.map = String(body.map || "").trim();
+        if ("map" in body) {
+          const key = String(body.map || "").trim();
+          // Sicherheit: die Dateipfade folgen immer der Kartenwahl
+          if (key && cfg.token && cfg.mission_dir && key !== mapKeyOf(cfg.mission_dir)) {
+            cfg.mission_dir = await missionDirForMap(key);
+          }
+          cfg.map = key;
+        }
         saveCfg();
         return state();
 
