@@ -31,18 +31,10 @@ Browser – auch komplett vom Handy aus:
   Bitte auch nie welche hier eintragen – es ist öffentlich.
 - Token versehentlich geteilt? Im Nitrado-Entwicklerportal widerrufen.
 
-## Ehrliche Grenzen (Konsolenserver)
+## Infos
 
-- Eine **`init.c` gibt es auf Konsolenservern nicht** – eigenes Scripting
-  ist nur auf PC-Servern möglich. Alles, was auf Konsole anpassbar ist,
+- Alles, was auf Konsole anpassbar ist,
   liegt im Missionsordner, und genau den macht die App komplett zugänglich.
-- **Live-Teleport / Items ohne Neustart spawnen** ist auf Konsole technisch
-  unmöglich. Die App bietet das Machbare: ändern → speichern → Server per
+- Die App bietet das Machbare: ändern → speichern → Server per
   Knopfdruck neu starten (2–5 Minuten).
 
-## Technik
-
-Reine statische Web-App (HTML/JS, Leaflet lokal gebündelt), gehostet über
-GitHub Pages (`.github/workflows/pages.yml` veröffentlicht bei jedem Push
-automatisch). Die zugehörige PC-Version mit lokalem Python-Server liegt im
-privaten Repo `Dayz-bot-test` (Branch `claude/dayz-init-c-manager-v33r82`).
