@@ -57,8 +57,16 @@ const DirectMode = (() => {
   }
 
   async function fileRead(path) {
-    const data = await nitrado(cfg.token, "GET",
-      `/services/${cfg.service_id}/gameservers/file_server/download`, { file: path });
+    let data;
+    try {
+      data = await nitrado(cfg.token, "GET",
+        `/services/${cfg.service_id}/gameservers/file_server/download`, { file: path });
+    } catch (e) {
+      // Nitrado meldet fehlende Dateien als 500 "File doesn't exist (anymore?)"
+      if (/doesn't exist|does not exist|no such file/i.test(e.message || ""))
+        throw new Error("Datei nicht gefunden: " + path);
+      throw e;
+    }
     const url = data.data && data.data.token && data.data.token.url;
     if (!url) throw new Error("Nitrado hat keine Download-URL geliefert.");
     let resp;

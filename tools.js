@@ -68,38 +68,57 @@ const Tools = (() => {
 
   /* ===================================================== XML-Werkzeuge */
 
+  /* Nur noch zum LESEN (Event-Vorlagen, Vorbelegungen) – geschrieben wird
+     unten per chirurgischem Text-Edit. */
   function parseXml(text) {
     const doc = new DOMParser().parseFromString(text, "text/xml");
     if (doc.querySelector("parsererror")) throw new Error("Datei enthält fehlerhaftes XML.");
     return doc;
   }
 
-  function dumpXml(doc) {
-    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
-      new XMLSerializer().serializeToString(doc.documentElement) + "\n";
+  /* ------------------------------------ Chirurgische Text-Edits (XML) --
+   * Statt die ganze Datei zu parsen und komplett neu zu schreiben, wird nur
+   * der betroffene Block ersetzt bzw. eingefügt. Der Rest der Datei bleibt
+   * Byte für Byte erhalten – und Fehler an anderen Stellen der Datei
+   * stören nicht. */
+
+  const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  /* Zeilenende-Stil der Datei übernehmen (Windows \r\n vs. \n) */
+  const eol = (text) => (text.includes("\r\n") ? "\r\n" : "\n");
+
+  /* `<tag … name="X" …>…</tag>` (oder self-closing) samt Einrückung finden */
+  function findNamedBlock(text, tag, name) {
+    const re = new RegExp(
+      "[ \\t]*<" + tag + "(?=[\\s/>])[^>]*\\bname=([\"'])" + escRe(name) + "\\1[^>]*" +
+      "(?:/>|>[\\s\\S]*?</" + tag + "\\s*>)");
+    const m = re.exec(text);
+    return m ? { start: m.index, end: m.index + m[0].length, block: m[0] } : null;
   }
 
-  /* Ein fertig eingerücktes XML-Schnipsel in ein Dokument importieren */
-  function importSnippet(doc, snippet) {
-    const frag = new DOMParser().parseFromString(snippet, "text/xml");
-    if (frag.querySelector("parsererror")) throw new Error("Interner XML-Fehler im Generator.");
-    return doc.importNode(frag.documentElement, true);
+  /* Snippet als neuen Eintrag direkt vor dem schließenden Root-Tag einfügen */
+  function insertIntoRoot(text, rootTag, snippet) {
+    const idx = text.lastIndexOf("</" + rootTag);
+    if (idx === -1)
+      throw new Error("Kein schließendes </" + rootTag + "> in der Datei gefunden – " +
+                      "ist das die richtige Datei?");
+    const nl = eol(text);
+    let head = text.slice(0, idx);
+    // Einrückung der Schlusszeile abtrennen und hinterher wiederherstellen
+    const closeIndent = (/(?:^|\n)([ \t]*)$/.exec(head) || [, ""])[1];
+    head = head.slice(0, head.length - closeIndent.length);
+    if (head && !head.endsWith("\n")) head += nl;
+    return head + "    " + snippet.replace(/\n/g, nl) + nl +
+           closeIndent + text.slice(idx);
   }
 
-  /* Element mit Namen ersetzen oder ans Ende der Wurzel anhängen */
-  function upsertRootChild(doc, matchSelector, snippet) {
-    const node = importSnippet(doc, snippet);
-    const existing = doc.querySelector(matchSelector);
-    if (existing) {
-      const prev = existing.previousSibling;
-      if (prev && prev.nodeType === 3) prev.remove();
-      existing.replaceWith(doc.createTextNode("\n    "), node);
-    } else {
-      const root = doc.documentElement;
-      const last = root.lastChild;
-      if (last && last.nodeType === 3) last.remove();
-      root.append(doc.createTextNode("\n    "), node, doc.createTextNode("\n"));
-    }
+  /* Benannten Block ersetzen oder – falls nicht vorhanden – neu einfügen */
+  function upsertNamedBlock(text, rootTag, tag, name, snippet) {
+    const found = findNamedBlock(text, tag, name);
+    if (!found) return insertIntoRoot(text, rootTag, snippet);
+    const indent = (/^[ \t]*/.exec(found.block) || [""])[0];
+    return text.slice(0, found.start) + indent +
+           snippet.replace(/\n/g, eol(text)) + text.slice(found.end);
   }
 
   const fmtNum = (v) => {
@@ -112,7 +131,6 @@ const Tools = (() => {
 
   /* events.xml: Event komplett anlegen/ersetzen */
   function upsertEvent(text, def) {
-    const doc = parseXml(text);
     const flags = def.flags || { deletable: 0, init_random: 0, remove_damaged: 1 };
     const kids = (def.children || []).map((c) =>
       `        <child lootmax="${c.lootmax ?? 0}" lootmin="${c.lootmin ?? 0}" ` +
@@ -135,109 +153,97 @@ const Tools = (() => {
 ${kids}
         </children>
     </event>`;
-    upsertRootChild(doc, `event[name="${def.name}"]`, snippet);
-    return dumpXml(doc);
+    return upsertNamedBlock(text, "events", "event", def.name, snippet);
   }
 
   /* events.xml: nur Zahlenfelder eines vorhandenen Events ändern */
   function updateEventCounts(text, name, values) {
-    const doc = parseXml(text);
-    const event = doc.querySelector(`event[name="${name}"]`);
-    if (!event) throw new Error(`Event "${name}" nicht in events.xml gefunden.`);
+    const found = findNamedBlock(text, "event", name);
+    if (!found) throw new Error(`Event "${name}" nicht in events.xml gefunden.`);
+    let block = found.block;
+    const nl = eol(text);
     for (const [field, value] of Object.entries(values)) {
-      let child = event.querySelector(":scope > " + field);
-      if (!child) {
-        child = doc.createElement(field);
-        event.prepend(child);
+      const re = new RegExp("(<" + field + "\\s*>)[^<]*(</" + field + "\\s*>)");
+      if (re.test(block)) {
+        block = block.replace(re, "$1" + value + "$2");
+      } else {
+        block = block.replace(/(<event[^>]*>)/,
+          "$1" + nl + "        <" + field + ">" + value + "</" + field + ">");
       }
-      child.textContent = String(value);
     }
-    return dumpXml(doc);
+    return text.slice(0, found.start) + block + text.slice(found.end);
+  }
+
+  /* cfgeventspawns.xml: Event-Block holen oder leer anlegen; self-closing
+     Blöcke (<event …/>) werden zum offenen Block erweitert. */
+  function ensureSpawnEventBlock(text, name) {
+    let found = findNamedBlock(text, "event", name);
+    if (!found) {
+      text = insertIntoRoot(text, "eventposdef",
+        `<event name="${escXml(name)}">\n    </event>`);
+      found = findNamedBlock(text, "event", name);
+    }
+    let block = found.block;
+    if (/\/>\s*$/.test(block))
+      block = block.replace(/\s*\/>\s*$/, ">" + eol(text) + "    </event>");
+    return { text, found, block };
   }
 
   /* cfgeventspawns.xml: Positionen eines Events setzen/ergänzen */
   function upsertEventspawns(text, name, positions, mode) {
-    const doc = parseXml(text);
-    let event = doc.querySelector(`event[name="${name}"]`);
-    if (!event) {
-      event = doc.createElement("event");
-      event.setAttribute("name", name);
-      const root = doc.documentElement;
-      const last = root.lastChild;
-      if (last && last.nodeType === 3) last.remove();
-      root.append(doc.createTextNode("\n    "), event, doc.createTextNode("\n"));
-    }
-    const existing = new Set(Array.from(event.querySelectorAll("pos")).map(
-      (p) => Math.round(p.getAttribute("x")) + "/" + Math.round(p.getAttribute("z"))));
+    const ctx = ensureSpawnEventBlock(text, name);
+    text = ctx.text;
+    let block = ctx.block;
+    const nl = eol(text);
+    const existing = new Set();
     if (mode === "replace") {
-      event.querySelectorAll("pos").forEach((p) => {
-        if (p.previousSibling && p.previousSibling.nodeType === 3) p.previousSibling.remove();
-        p.remove();
-      });
-      existing.clear();
+      block = block.replace(/[ \t]*<pos\b[^>]*\/>[ \t]*\r?\n?/g, "");
+    } else {
+      for (const m of block.matchAll(/<pos\b[^>]*?\bx="([^"]+)"[^>]*?\bz="([^"]+)"/g))
+        existing.add(Math.round(Number(m[1])) + "/" + Math.round(Number(m[2])));
     }
-    let added = 0;
+    let added = 0, lines = "";
     for (const point of positions) {
       const key = Math.round(point.x) + "/" + Math.round(point.z);
       if (existing.has(key)) continue;
       existing.add(key);
-      const pos = doc.createElement("pos");
-      pos.setAttribute("x", fmtNum(point.x));
-      pos.setAttribute("z", fmtNum(point.z));
-      pos.setAttribute("a", fmtNum(point.a || 0));
-      event.append(doc.createTextNode("\n        "), pos);
+      lines += '        <pos x="' + fmtNum(point.x) + '" z="' + fmtNum(point.z) +
+               '" a="' + fmtNum(point.a || 0) + '"/>' + nl;
       added += 1;
     }
-    if (added || mode === "replace") {
-      const last = event.lastChild;
-      if (!(last && last.nodeType === 3 && last.textContent.includes("\n")))
-        event.append(doc.createTextNode("\n    "));
-    }
-    return { text: dumpXml(doc), added };
+    block = block.replace(/([ \t]*)<\/event\s*>$/, lines + "$1</event>");
+    return { text: text.slice(0, ctx.found.start) + block + text.slice(ctx.found.end),
+             added };
   }
 
   /* cfgeventspawns.xml: Zonen (<zone> mit Bewegungsradius) eines Events setzen –
      korrektes Format für Zombie-Horden. Ersetzt vorhandene zone/pos des Events. */
   function writeEventZones(text, name, zones) {
-    const doc = parseXml(text);
-    let event = doc.querySelector(`event[name="${name}"]`);
-    if (!event) {
-      event = doc.createElement("event");
-      event.setAttribute("name", name);
-      const root = doc.documentElement;
-      const last = root.lastChild;
-      if (last && last.nodeType === 3) last.remove();
-      root.append(doc.createTextNode("\n    "), event, doc.createTextNode("\n"));
-    }
-    event.querySelectorAll("zone, pos").forEach((z) => {
-      if (z.previousSibling && z.previousSibling.nodeType === 3) z.previousSibling.remove();
-      z.remove();
-    });
+    const ctx = ensureSpawnEventBlock(text, name);
+    text = ctx.text;
+    let block = ctx.block;
+    const nl = eol(text);
+    block = block.replace(/[ \t]*<(?:zone|pos)\b[^>]*\/>[ \t]*\r?\n?/g, "");
+    let lines = "";
     for (const z of zones) {
-      const zone = doc.createElement("zone");
-      zone.setAttribute("smin", z.smin); zone.setAttribute("smax", z.smax);
-      zone.setAttribute("dmin", z.dmin); zone.setAttribute("dmax", z.dmax);
-      zone.setAttribute("r", z.r);
-      zone.setAttribute("x", fmtNum(z.x));
-      zone.setAttribute("y", fmtNum(z.y || 0));
-      zone.setAttribute("z", fmtNum(z.z));
-      event.append(doc.createTextNode("\n        "), zone);
+      lines += '        <zone smin="' + z.smin + '" smax="' + z.smax +
+               '" dmin="' + z.dmin + '" dmax="' + z.dmax + '" r="' + z.r +
+               '" x="' + fmtNum(z.x) + '" y="' + fmtNum(z.y || 0) +
+               '" z="' + fmtNum(z.z) + '"/>' + nl;
     }
-    event.append(doc.createTextNode("\n    "));
-    return dumpXml(doc);
+    block = block.replace(/([ \t]*)<\/event\s*>$/, lines + "$1</event>");
+    return text.slice(0, ctx.found.start) + block + text.slice(ctx.found.end);
   }
 
   /* cfgspawnabletypes.xml: <type>-Eintrag anlegen/ersetzen.
      rows: [{kind:"attachments"|"cargo", item, chance(0-1)}] */
   function upsertSpawnableType(text, name, rows) {
-    const doc = parseXml(text);
     const blocks = rows.map((r) =>
       `        <${r.kind} chance="${(Number(r.chance) || 0).toFixed(2)}">\n` +
       `            <item name="${escXml(r.item)}" chance="1.00"/>\n` +
       `        </${r.kind}>`).join("\n");
     const snippet = `<type name="${escXml(name)}">\n${blocks}\n    </type>`;
-    upsertRootChild(doc, `type[name="${name}"]`, snippet);
-    return dumpXml(doc);
+    return upsertNamedBlock(text, "spawnabletypes", "type", name, snippet);
   }
 
   /* ================================================== Datei-Zugriff */
@@ -249,7 +255,7 @@ ${kids}
       return (await api("/api/file?path=" + encodeURIComponent(path))).content;
     } catch (err) {
       const msg = String(err.message || "");
-      if (/404|nicht gefunden|fehlgeschlagen \(4/i.test(msg)) return null;
+      if (/404|nicht gefunden|doesn't exist|does not exist|fehlgeschlagen \(4/i.test(msg)) return null;
       throw err;
     }
   }
