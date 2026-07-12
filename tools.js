@@ -35,6 +35,37 @@ const Tools = (() => {
     return Number.isFinite(n) ? n : fallback;
   };
 
+  /* Gas-Partikel-Effekte (auswählbar im Gaszonen-Tool) */
+  const GAS_PARTICLES = [
+    ["graphics/particles/contaminated_area_gas_bigass", "Groß (Standard)"],
+    ["graphics/particles/contaminated_area_gas", "Mittel"],
+    ["graphics/particles/contaminated_area_gas_small", "Klein"],
+  ];
+
+  /* Bewegungsstil einer Zombie-Horde → smin/smax/dmin/dmax */
+  const HORDE_MOVEMENT = {
+    stationary: { label: "Stehend (bleibt am Ort)", smin: 0, smax: 0, dmin: 30, dmax: 30 },
+    patrol: { label: "Patrouille (läuft umher)", smin: 2, smax: 5, dmin: 10, dmax: 50 },
+    dynamic: { label: "Aggressiv (verfolgt weit)", smin: 5, smax: 10, dmin: 5, dmax: 20 },
+  };
+
+  /* Zombie-Klassen nach Kategorie – damit niemand Klassennamen tippen muss */
+  const ZOMBIE_DATA = {
+    InfectedArmy: ["ZmbM_PatrolNormal_Autumn", "ZmbM_PatrolNormal_Flat", "ZmbM_PatrolNormal_PautRev", "ZmbM_PatrolNormal_Summer", "ZmbM_SoldierNormal", "ZmbM_usSoldier_normal_Desert", "ZmbM_usSoldier_normal_Woodland"],
+    InfectedArmyHard: ["ZmbM_PatrolNormal_Autumn", "ZmbM_PatrolNormal_Flat", "ZmbM_PatrolNormal_PautRev", "ZmbM_PatrolNormal_Summer", "ZmbM_SoldierNormal", "ZmbM_usSoldier_Heavy_Woodland", "ZmbM_usSoldier_Officer_Desert", "ZmbM_usSoldier_normal_Desert", "ZmbM_usSoldier_normal_Woodland"],
+    InfectedCity: ["ZmbF_CitizenANormal_Blue", "ZmbF_CitizenBSkinny", "ZmbF_Clerk_Normal_Blue", "ZmbF_JournalistNormal_Blue", "ZmbF_ShortSkirt_beige", "ZmbF_SkaterYoung_Brown", "ZmbF_SurvivorNormal_Blue", "ZmbM_CitizenASkinny_Blue", "ZmbM_CitizenBFat_Blue", "ZmbM_ClerkFat_Grey", "ZmbM_CommercialPilotOld_Blue", "ZmbM_Gamedev_Black", "ZmbM_JournalistSkinny", "ZmbM_SkaterYoung_Brown"],
+    InfectedFirefighter: ["ZmbM_FirefighterNormal", "ZmbM_NBC_Yellow"],
+    InfectedIndustrial: ["ZmbF_BlueCollarFat_Blue", "ZmbF_MechanicNormal_Beige", "ZmbM_ConstrWorkerNormal_Beige", "ZmbM_HandymanNormal_Beige", "ZmbM_HeavyIndustryWorker", "ZmbM_MechanicSkinny_Blue", "ZmbM_OffshoreWorker_Green"],
+    InfectedMedic: ["ZmbF_DoctorSkinny", "ZmbF_NurseFat", "ZmbF_ParamedicNormal_Blue", "ZmbM_DoctorFat", "ZmbM_ParamedicNormal_Black", "ZmbM_PatientSkinny"],
+    InfectedNBC: ["ZmbM_NBC_Grey", "ZmbM_NBC_Yellow"],
+    InfectedPolice: ["ZmbF_PoliceWomanNormal", "ZmbM_PolicemanFat", "ZmbM_PolicemanSpecForce", "ZmbM_PolicemanSpecForce_Heavy"],
+    InfectedPrisoner: ["ZmbM_PrisonerSkinny"],
+    InfectedReligious: ["ZmbM_priestPopSkinny"],
+    InfectedSanta: ["ZmbM_Santa"],
+    InfectedSolitude: ["ZmbF_HikerSkinny_Blue", "ZmbM_FishermanOld_Blue", "ZmbM_HermitSkinny_Beige", "ZmbM_HikerSkinny_Blue", "ZmbM_HunterOld_Autumn"],
+    InfectedVillage: ["ZmbF_JoggerSkinny_Blue", "ZmbF_MilkMaidOld_Beige", "ZmbF_VillagerOld_Green", "ZmbM_FarmerFat_Blue", "ZmbM_Jacket_beige", "ZmbM_JoggerSkinny_Blue", "ZmbM_VillagerOld_Blue"],
+  };
+
   /* ===================================================== XML-Werkzeuge */
 
   function parseXml(text) {
@@ -165,6 +196,37 @@ ${kids}
     return { text: dumpXml(doc), added };
   }
 
+  /* cfgeventspawns.xml: Zonen (<zone> mit Bewegungsradius) eines Events setzen –
+     korrektes Format für Zombie-Horden. Ersetzt vorhandene zone/pos des Events. */
+  function writeEventZones(text, name, zones) {
+    const doc = parseXml(text);
+    let event = doc.querySelector(`event[name="${name}"]`);
+    if (!event) {
+      event = doc.createElement("event");
+      event.setAttribute("name", name);
+      const root = doc.documentElement;
+      const last = root.lastChild;
+      if (last && last.nodeType === 3) last.remove();
+      root.append(doc.createTextNode("\n    "), event, doc.createTextNode("\n"));
+    }
+    event.querySelectorAll("zone, pos").forEach((z) => {
+      if (z.previousSibling && z.previousSibling.nodeType === 3) z.previousSibling.remove();
+      z.remove();
+    });
+    for (const z of zones) {
+      const zone = doc.createElement("zone");
+      zone.setAttribute("smin", z.smin); zone.setAttribute("smax", z.smax);
+      zone.setAttribute("dmin", z.dmin); zone.setAttribute("dmax", z.dmax);
+      zone.setAttribute("r", z.r);
+      zone.setAttribute("x", fmtNum(z.x));
+      zone.setAttribute("y", fmtNum(z.y || 0));
+      zone.setAttribute("z", fmtNum(z.z));
+      event.append(doc.createTextNode("\n        "), zone);
+    }
+    event.append(doc.createTextNode("\n    "));
+    return dumpXml(doc);
+  }
+
   /* cfgspawnabletypes.xml: <type>-Eintrag anlegen/ersetzen.
      rows: [{kind:"attachments"|"cargo", item, chance(0-1)}] */
   function upsertSpawnableType(text, name, rows) {
@@ -252,6 +314,43 @@ ${kids}
       item: row.querySelector(".item-name").value.trim(),
       num: num(row.querySelector(".num").value, opts.numDefault),
     })).filter((r) => r.item);
+    return wrap;
+  }
+
+  /* Zombie-Auswahl: Kategorie- + Typ-Dropdown, ausgewählte Zombies mit Anzahl */
+  function zombiePicker() {
+    const wrap = h("div");
+    const cat = h("select", {});
+    const char = h("select", {});
+    Object.keys(ZOMBIE_DATA).forEach((c) => cat.append(h("option", { value: c }, c)));
+    function fillChars() {
+      char.innerHTML = "";
+      (ZOMBIE_DATA[cat.value] || []).forEach((z) => char.append(h("option", { value: z }, z)));
+    }
+    cat.addEventListener("change", fillChars);
+    fillChars();
+    const rows = h("div");
+    function addZombie(type, count) {
+      if (!type) return;
+      if (Array.from(rows.children).some((r) => r.dataset.type === type)) return;
+      const row = h("div", { class: "row" },
+        h("span", { style: "flex:1 1 180px" }, type),
+        h("input", { class: "num", type: "number", min: "1",
+                     value: count || 3, title: "Anzahl pro Zone" }),
+        h("button", { class: "small", onclick: () => row.remove() }, "✕"));
+      row.dataset.type = type;
+      rows.append(row);
+    }
+    wrap.append(
+      field("Zombie-Kategorie", cat),
+      field("Zombie-Typ", char),
+      h("button", { class: "small",
+                    onclick: () => addZombie(char.value) }, "+ Zombie hinzufügen"),
+      h("div", { class: "grp" }, h("h4", {}, "Ausgewählte Zombies (Anzahl je Zone)"), rows));
+    wrap.values = () => Array.from(rows.children).map((r) => ({
+      item: r.dataset.type, num: num(r.querySelector(".num").value, 3),
+    }));
+    wrap.add = addZombie;
     return wrap;
   }
 
@@ -604,37 +703,54 @@ ${kids}
 
   registry.push({
     id: "gaszone", icon: "☣️", title: "Gas-Zonen Builder",
-    desc: "Statische Kontaminationszonen (wie Rify/Pavlovo) an beliebigen Stellen platzieren. Spieler brauchen dort NBC-Schutz + Gasmaske.",
+    desc: "Statische Kontaminationszonen (wie Rify/Pavlovo) platzieren – mit Partikel-Effekt und sicheren Teleport-Punkten für Spieler, die in der Zone einloggen.",
     render(form) {
       form.append(field("Name der Zone", textInput("gz-name", "MeineGasZone")));
-      form.append(field("Radius in Metern", numInput("gz-radius", 150)));
+      form.append(h("div", { class: "grp" },
+        h("h4", {}, "Zonen-Eigenschaften"),
+        h("div", { class: "row" },
+          "Radius (m):", numInput("gz-radius", 150),
+          "Höhe oben:", numInput("gz-posheight", 20),
+          "Höhe unten:", numInput("gz-negheight", 3)),
+        h("div", { class: "row" },
+          "Partikel-Abstand:", numInput("gz-innerpart", 100),
+          "Außenversatz:", numInput("gz-outeroffset", 20)),
+        field("Gas-Partikel",
+          h("select", { id: "gz-particle" },
+            ...GAS_PARTICLES.map(([v, l]) => h("option", { value: v }, l))))));
       this.pos = posList({});
-      form.append(h("div", { class: "grp" }, h("h4", {}, "Position(en)"), this.pos));
-      form.append(field("Boden-Höhe Y (leer = automatisch großzügig)",
-        textInput("gz-y", "", "z.B. 210")));
-      form.append(h("p", { class: "hint" },
-        "Tipp: Ohne Y-Angabe wirkt die Zone von Meereshöhe bis 600 m – " +
-        "funktioniert überall, ohne die Geländehöhe zu kennen."));
+      form.append(h("div", { class: "grp" },
+        h("h4", {}, "Position(en) der Gaszone(n)"),
+        h("p", { class: "hint" }, "Jede Position wird eine eigene Zone."),
+        this.pos));
+      this.safe = posList({ startEmpty: true });
+      form.append(h("div", { class: "grp" },
+        h("h4", {}, "Sichere Teleport-Punkte (SafePositions)"),
+        h("p", { class: "hint" }, "Wohin Spieler versetzt werden, die mitten " +
+          "in einer Gaszone einloggen. Optional, aber empfohlen – sonst " +
+          "sterben sie beim Beitreten."),
+        this.safe));
     },
     async generate() {
       const name = $("#gz-name").value.trim() || "MeineGasZone";
       const radius = num($("#gz-radius").value, 150);
+      const posHeight = num($("#gz-posheight").value, 20);
+      const negHeight = num($("#gz-negheight").value, 3);
+      const innerPartDist = num($("#gz-innerpart").value, 100);
+      const outerOffset = num($("#gz-outeroffset").value, 20);
+      const particle = $("#gz-particle").value;
       const positions = this.pos.values();
-      if (!positions.length) throw new Error("Bitte mindestens eine Position angeben.");
-      const yRaw = $("#gz-y").value.trim();
-      const y = yRaw === "" ? 0 : num(yRaw, 0);
-      const posHeight = yRaw === "" ? 600 : 25;
-      const negHeight = yRaw === "" ? 100 : 10;
+      if (!positions.length) throw new Error("Bitte mindestens eine Zonen-Position angeben.");
+      const safe = this.safe.values();
       const areas = positions.map((p, idx) => ({
         AreaName: positions.length > 1 ? name + "_" + (idx + 1) : name,
         Type: "ContaminatedArea_Static",
         TriggerType: "ContaminatedTrigger",
         Data: {
-          Pos: [p.x, y, p.z], Radius: radius,
+          Pos: [p.x, 0, p.z], Radius: radius,
           PosHeight: posHeight, NegHeight: negHeight,
-          InnerRingCount: 1, InnerPartDist: 50, WithAerosol: 1,
-          VerticalLayers: 0,
-          ParticleName: "graphics/particles/contaminated_area_gas_bigass",
+          InnerPartDist: innerPartDist, OuterOffset: outerOffset,
+          ParticleName: particle,
         },
         PlayerData: {
           AroundPartName: "graphics/particles/contaminated_area_gas_around",
@@ -642,11 +758,13 @@ ${kids}
           PPERequesterType: "PPERequester_ContaminatedAreaTint",
         },
       }));
+      const summary = areas.map((a) =>
+        "Gaszone „" + a.AreaName + "“ bei X " + a.Data.Pos[0] + " / Z " +
+        a.Data.Pos[2] + ", Radius " + radius + " m.");
+      if (safe.length) summary.push(safe.length + " sichere Teleport-Punkt(e).");
       return [{
         path: mission("cfgeffectarea.json"),
-        summary: areas.map((a) =>
-          "Gaszone „" + a.AreaName + "“ bei X " + a.Data.Pos[0] + " / Z " +
-          a.Data.Pos[2] + ", Radius " + radius + " m."),
+        summary,
         transform: (current) => {
           const data = current ? JSON.parse(current)
                                : { Areas: [], SafePositions: [] };
@@ -655,6 +773,7 @@ ${kids}
           data.Areas = data.Areas.filter((a) => !newNames.has(a.AreaName));
           data.Areas.push(...areas);
           if (!Array.isArray(data.SafePositions)) data.SafePositions = [];
+          if (safe.length) data.SafePositions = safe.map((s) => [s.x, s.z]);
           return JSON.stringify(data, null, 4) + "\n";
         },
       }];
@@ -665,50 +784,59 @@ ${kids}
 
   registry.push({
     id: "horde", icon: "🧟", title: "Zombie-Horden Generator",
-    desc: "Feste Zombie-Horden an Wunschpositionen – Typen und Anzahl frei wählbar.",
+    desc: "Feste Zombie-Horden an Wunschpositionen – Zombie-Typen bequem per Liste auswählen, Bewegungsverhalten und Zonen-Radius einstellbar.",
     render(form) {
-      form.append(field("Name der Horde (muss mit „Static“ beginnen)",
-        textInput("hd-name", "StaticMeineHorde")));
-      const grp = h("div", { class: "grp" }, h("h4", {}, "Zombie-Typen"));
-      this.zombies = itemList({ datalist: "dl-zmb", numLabel: "Anzahl", numDefault: 5,
-        placeholder: "z.B. ZmbM_SoldierNormal",
-        initial: [["ZmbM_CitizenASkater", 5], ["", undefined]] });
-      grp.append(this.zombies);
-      form.append(grp);
+      form.append(field("Name der Horde", textInput("hd-name", "InfectedHorde")));
+      this.zombies = zombiePicker();
+      this.zombies.add("ZmbM_SoldierNormal", 5);
+      form.append(this.zombies);
+      form.append(field("Bewegungsverhalten",
+        h("select", { id: "hd-move" },
+          ...Object.entries(HORDE_MOVEMENT).map(([v, m]) =>
+            h("option", { value: v }, m.label)))));
       this.pos = posList({});
-      form.append(h("div", { class: "grp" }, h("h4", {}, "Position(en) der Horde"), this.pos));
+      form.append(h("div", { class: "grp" },
+        h("h4", {}, "Position(en) der Horde"),
+        h("div", { class: "row" }, "Zonen-Radius (m):", numInput("hd-radius", 25)),
+        this.pos));
       form.append(h("details", {},
         h("summary", {}, "Experten-Einstellungen"),
-        field("Lifetime (Sek.)", numInput("hd-lifetime", 1800)),
-        field("Saferadius", numInput("hd-safe", 200)),
-        field("Distanceradius", numInput("hd-dist", 200)),
-        field("Cleanupradius", numInput("hd-cleanup", 1000))));
+        field("Lifetime (Sek.)", numInput("hd-lifetime", 300)),
+        field("Loot pro Zombie (min/max)",
+          h("span", { class: "row" }, numInput("hd-lootmin", 0), numInput("hd-lootmax", 0))),
+        field("Cleanupradius", numInput("hd-cleanup", 400))));
     },
     async generate() {
-      let name = $("#hd-name").value.trim() || "StaticMeineHorde";
-      if (!/^Static/.test(name)) name = "Static" + name;
+      const name = $("#hd-name").value.trim() || "InfectedHorde";
       const zombies = this.zombies.values();
       const positions = this.pos.values();
-      if (!zombies.length) throw new Error("Bitte mindestens einen Zombie-Typ angeben.");
+      if (!zombies.length) throw new Error("Bitte mindestens einen Zombie-Typ hinzufügen.");
       if (!positions.length) throw new Error("Bitte mindestens eine Position angeben.");
+      const move = HORDE_MOVEMENT[$("#hd-move").value] || HORDE_MOVEMENT.stationary;
+      const radius = num($("#hd-radius").value, 25);
+      const lootmin = num($("#hd-lootmin").value, 0);
+      const lootmax = num($("#hd-lootmax").value, 0);
       const count = positions.length;
       const total = zombies.reduce((s, z) => s + z.num, 0);
       const def = {
         name, nominal: count, min: count, max: count,
-        lifetime: num($("#hd-lifetime").value, 1800), restock: 0,
-        saferadius: num($("#hd-safe").value, 200),
-        distanceradius: num($("#hd-dist").value, 200),
-        cleanupradius: num($("#hd-cleanup").value, 1000),
+        lifetime: num($("#hd-lifetime").value, 300), restock: 0,
+        saferadius: 10, distanceradius: 300,
+        cleanupradius: num($("#hd-cleanup").value, 400),
         flags: { deletable: 0, init_random: 0, remove_damaged: 1 },
         position: "fixed", limit: "custom", active: 1,
         children: zombies.map((z) => ({ type: z.item, min: Math.round(z.num),
-                                        max: Math.round(z.num) })),
+                                        max: Math.round(z.num),
+                                        lootmin, lootmax })),
       };
+      const zones = positions.map((p) => ({ x: p.x, y: 0, z: p.z, r: radius,
+        smin: move.smin, smax: move.smax, dmin: move.dmin, dmax: move.dmax }));
       return [
         {
           path: mission("db/events.xml"),
-          summary: ["Event „" + name + "“ mit " + total + " Zombies (" +
-                    zombies.map((z) => z.num + "× " + z.item).join(", ") + ")."],
+          summary: ["Event „" + name + "“ mit " + total + " Zombies pro Zone (" +
+                    zombies.map((z) => z.num + "× " + z.item).join(", ") +
+                    "), Verhalten: " + move.label + "."],
           transform: (current) => {
             if (current === null) throw new Error("db/events.xml wurde auf dem Server nicht gefunden.");
             return upsertEvent(current, def);
@@ -716,10 +844,11 @@ ${kids}
         },
         {
           path: mission("cfgeventspawns.xml"),
-          summary: positions.map((p) => "Spawnposition X " + p.x + " / Z " + p.z + "."),
+          summary: [count + " Horden-Zone(n), Radius " + radius + " m: " +
+                    positions.map((p) => "X " + p.x + "/Z " + p.z).join(", ") + "."],
           transform: (current) => {
             if (current === null) throw new Error("cfgeventspawns.xml wurde auf dem Server nicht gefunden.");
-            return upsertEventspawns(current, name, positions, "replace").text;
+            return writeEventZones(current, name, zones);
           },
         },
       ];
