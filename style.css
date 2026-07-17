@@ -49,6 +49,17 @@ header {
   font-size: 15px;
 }
 #tabs button:hover { color: var(--text); background: var(--bg3); }
+#tabs .tab-link {
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 15px;
+  text-decoration: none;
+  white-space: nowrap;
+  align-self: center;
+}
+#tabs .tab-link:hover { color: var(--text); background: var(--bg3); }
 #tabs button.active { color: var(--text); background: var(--bg3); border-color: var(--border); }
 .header-right { display: flex; align-items: center; gap: 10px; }
 .pill {

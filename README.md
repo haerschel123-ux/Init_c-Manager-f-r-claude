@@ -10,6 +10,9 @@ Browser – auch komplett vom Handy aus:
 - 🗺️ Interaktive Chernarus-Karte: Spawnpunkte, Events (Heli-Crashes …) und
   Objekte/Gebäude per Fingertipp setzen, verschieben, löschen
 - 🎒 Loot-Editor für `types.xml` als durchsuchbare Tabelle
+- 🎖️ Loadout-Generator: Spawn-Ausrüstung für neue Charaktere zusammenklicken
+  (Waffen mit Aufsätzen & Magazinen, Kleidung, Rucksack, Extra-Items) und als
+  `cfgPlayerSpawnGearPresets`-JSON herunterladen – inkl. Beispiel-Loadouts
 - 🖥️ Serverstatus, Neustart und Stopp per Knopfdruck
 - 💾 Automatisches Backup vor jedem Speichern (im Browser, unter ⚙️ abrufbar)
 
