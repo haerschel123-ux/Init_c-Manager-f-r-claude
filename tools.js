@@ -66,6 +66,63 @@ const Tools = (() => {
     InfectedVillage: ["ZmbF_JoggerSkinny_Blue", "ZmbF_MilkMaidOld_Beige", "ZmbF_VillagerOld_Green", "ZmbM_FarmerFat_Blue", "ZmbM_Jacket_beige", "ZmbM_JoggerSkinny_Blue", "ZmbM_VillagerOld_Blue"],
   };
 
+  /* ===================================================== Loadout-Daten */
+
+  /* Die 14 Ausrüstungs-Slots (id = interner Schlüssel, slotName = exakt wie
+   * DayZ es erwartet, bucket = Katalog-Kategorie in loadout-catalog.js). */
+  const LOADOUT_SLOTS = [
+    { id: "Headgear",  label: "Kopfbedeckung", slotName: "Headgear",  bucket: "Headgear" },
+    { id: "Mask",      label: "Maske",         slotName: "Mask",      bucket: "Mask" },
+    { id: "Eyewear",   label: "Brille",        slotName: "Eyewear",   bucket: "Eyewear" },
+    { id: "Body",      label: "Oberteil",      slotName: "Body",      bucket: "Body" },
+    { id: "Vest",      label: "Weste",         slotName: "Vest",      bucket: "Vest" },
+    { id: "Gloves",    label: "Handschuhe",    slotName: "Gloves",    bucket: "Gloves" },
+    { id: "Armband",   label: "Armband",       slotName: "Armband",   bucket: "Armband" },
+    { id: "Hands",     label: "Hände (Waffe)", slotName: "Hands",     bucket: "Hands" },
+    { id: "shoulderL", label: "Schulter L",    slotName: "shoulderL", bucket: "Hands" },
+    { id: "shoulderR", label: "Schulter R",    slotName: "shoulderR", bucket: "Hands" },
+    { id: "Back",      label: "Rucksack",      slotName: "Back",      bucket: "Back" },
+    { id: "Hips",      label: "Gürtel",        slotName: "Hips",      bucket: "Hips" },
+    { id: "Legs",      label: "Hose",          slotName: "Legs",      bucket: "Legs" },
+    { id: "Feet",      label: "Schuhe",        slotName: "Feet",      bucket: "Feet" },
+  ];
+
+  /* Zustand-Presets → [healthMin, healthMax] (wie im Vorbild) */
+  const LOADOUT_CONDITIONS = [
+    ["pristine", "Neuwertig (1.0)",        1.0, 1.0],
+    ["worn",     "Gebraucht (0.7–0.9)",    0.7, 0.9],
+    ["damaged",  "Beschädigt (0.5–0.7)",   0.5, 0.7],
+    ["badly",    "Stark beschädigt (0.3–0.5)", 0.3, 0.5],
+    ["random",   "Zufällig (0.5–1.0)",     0.5, 1.0],
+    ["custom",   "Eigene Werte…",          null, null],
+  ];
+
+  /* Alle spielbaren Charaktermodelle (Survivor) */
+  const CHARACTER_TYPES = [
+    "SurvivorM_Boris", "SurvivorM_Cyril", "SurvivorM_Denis", "SurvivorM_Elias",
+    "SurvivorM_Francis", "SurvivorM_Guo", "SurvivorM_Hassan", "SurvivorM_Indar",
+    "SurvivorM_Jose", "SurvivorM_Kaito", "SurvivorM_Lewis", "SurvivorM_Manua",
+    "SurvivorM_Mirek", "SurvivorM_Niki", "SurvivorM_Oliver", "SurvivorM_Peter",
+    "SurvivorM_Quinn", "SurvivorM_Rolf", "SurvivorM_Seth", "SurvivorM_Taiki",
+    "SurvivorF_Baty", "SurvivorF_Eva", "SurvivorF_Frida", "SurvivorF_Gabi",
+    "SurvivorF_Helga", "SurvivorF_Irena", "SurvivorF_Judy", "SurvivorF_Keiko",
+    "SurvivorF_Linda", "SurvivorF_Maria", "SurvivorF_Naomi",
+  ];
+
+  /* Bildpfad zu einem Item (Kleinschreibung), mit Platzhalter-Fallback */
+  const itemImg = (cls) => {
+    const img = h("img", {
+      class: "item-img", loading: "lazy", alt: cls,
+      src: "images/items/" + String(cls).toLowerCase() + ".avif",
+    });
+    img.addEventListener("error", () => img.classList.add("noimg"));
+    return img;
+  };
+
+  /* Hübscher Anzeigename aus einem Klassennamen */
+  const prettyName = (cls) => String(cls).replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
   /* ===================================================== XML-Werkzeuge */
 
   /* Nur noch zum LESEN (Event-Vorlagen, Vorbelegungen) – geschrieben wird
@@ -687,116 +744,403 @@ ${kids}
 
   /* ------------------------------------------------ 1. Loadout Generator */
 
-  const SLOTS = [
-    ["Headgear", "Kopfbedeckung"], ["Mask", "Maske"], ["Body", "Oberteil"],
-    ["Vest", "Weste"], ["Gloves", "Handschuhe"], ["Legs", "Hose"],
-    ["Feet", "Schuhe"], ["Back", "Rucksack"],
-  ];
+  /* Katalog-Zugriff (aus loadout-catalog.js; Fallbacks falls nicht geladen) */
+  const catBucket = (b) => (window.LOADOUT_CATALOG && window.LOADOUT_CATALOG[b]) || [];
+  const catAll = () => window.LOADOUT_ALL || [];
+  const catAttach = () => window.LOADOUT_ATTACH || [];
+  const searchAll = (term) => {
+    const t = term.toLowerCase();
+    return catAll().filter((c) => c.includes(t));
+  };
+
+  /* Zustand-Preset → [healthMin, healthMax] für einen Eintrag */
+  function condHealth(entry) {
+    if (entry.cond === "custom") return [num(entry.hMin, 1), num(entry.hMax, 1)];
+    const c = LOADOUT_CONDITIONS.find((x) => x[0] === entry.cond) || LOADOUT_CONDITIONS[0];
+    return [c[2], c[3]];
+  }
+  function entryAttrs(entry) {
+    const [hMin, hMax] = condHealth(entry);
+    return { healthMin: hMin, healthMax: hMax,
+             quantityMin: num(entry.qMin, -1), quantityMax: num(entry.qMax, -1) };
+  }
+  /* Kind-Items in simple/complex aufteilen (wie im Vorbild: complex, wenn
+   * ein QuickBar-Slot gesetzt ist oder eigene Unter-Aufsätze existieren). */
+  function splitChildren(children, attrs) {
+    const simple = [], complex = [];
+    (children || []).forEach((ch) => {
+      const hasSub = ch.children && ch.children.length;
+      if ((ch.quickBar != null && ch.quickBar >= 0) || hasSub) {
+        const cx = { itemType: ch.cls, attributes: attrs,
+                     quickBarSlot: ch.quickBar >= 0 ? ch.quickBar : -1 };
+        if (hasSub) {
+          cx.simpleChildrenTypes = ch.children.map((s) => s.cls || s);
+          cx.simpleChildrenUseDefaultAttributes = false;
+        }
+        complex.push(cx);
+      } else {
+        simple.push(ch.cls);
+      }
+    });
+    return { simple, complex };
+  }
+  function buildItemSet(entry) {
+    const a = entryAttrs(entry);
+    const { simple, complex } = splitChildren(entry.children, a);
+    return { itemType: entry.cls, spawnWeight: num(entry.spawnWeight, 1),
+             attributes: a, quickBarSlot: entry.quickBar >= 0 ? entry.quickBar : -1,
+             simpleChildrenTypes: simple, simpleChildrenUseDefaultAttributes: false,
+             complexChildrenTypes: complex };
+  }
+  function buildCargoSet(c) {
+    const a = entryAttrs(c);
+    const { simple, complex } = splitChildren(c.items, a);
+    return { name: c.name || "Cargo", spawnWeight: num(c.spawnWeight, 1),
+             attributes: a, simpleChildrenTypes: simple,
+             simpleChildrenUseDefaultAttributes: false, complexChildrenTypes: complex };
+  }
 
   registry.push({
     id: "loadout", icon: "🧍", title: "Loadout Generator",
-    desc: "Start-Ausrüstung für frisch gespawnte Spieler festlegen – neu anlegen oder vorhandene Presets bearbeiten. (Funktioniert ab DayZ 1.20 auch auf Konsole.)",
-    async render(form) {
-      this._file = null;
-      const gameplay = await readJsonOrNull(await missionPath("cfggameplay.json"));
-      const files = (gameplay && gameplay.PlayerData &&
-                     gameplay.PlayerData.spawnGearPresetFiles) || [];
-      form.append(loadPicker("– Neues Preset erstellen –", files, async (file) => {
-        this._file = file || null;
-        if (!file) return;
-        const preset = await readJsonOrNull(await missionPath(file));
-        if (!preset) return toast("Preset „" + file + "“ konnte nicht geladen werden.", "error");
-        $("#lo-name").value = preset.name || file.replace(/\.json$/i, "");
-        for (const [slot] of SLOTS) $("#lo-slot-" + slot).value = "";
-        for (const set of preset.attachmentSlotItemSets || []) {
-          const input = $("#lo-slot-" + set.slotName);
-          const first = (set.discreteItemSets || [])[0];
-          if (input && first && first.itemType) input.value = first.itemType;
-        }
-        const counts = new Map();
-        for (const set of preset.discreteUnsortedItemSets || [])
-          for (const it of set.simpleChildrenTypes || [])
-            counts.set(it, (counts.get(it) || 0) + 1);
-        const fresh = itemList({ numLabel: "Anzahl", numDefault: 1,
-          initial: counts.size ? Array.from(counts) : [["", undefined]] });
-        this.invList.replaceWith(fresh);
-        this.invList = fresh;
-        const attrs =
-          ((preset.attachmentSlotItemSets || [])[0]?.discreteItemSets?.[0]?.attributes) ||
-          ((preset.discreteUnsortedItemSets || [])[0]?.attributes);
-        if (attrs) {
-          const v = attrs.healthMin + "," + attrs.healthMax;
-          if (Array.from($("#lo-health").options).some((o) => o.value === v))
-            $("#lo-health").value = v;
-        }
-        toast("Preset geladen – anpassen und Vorschau öffnen.");
-      }));
-      form.append(field("Name des Presets",
-        textInput("lo-name", "MeinLoadout")));
-      const grp = h("div", { class: "grp" }, h("h4", {}, "Kleidung (leer = Standard-Zufall)"));
-      for (const [slot, label] of SLOTS) {
-        grp.append(h("div", { class: "row" },
-          h("span", { style: "width:130px" }, label),
-          textInput("lo-slot-" + slot, "", "z.B. TShirt_Red", "dl-items")));
-      }
-      form.append(grp);
-      const inv = h("div", { class: "grp" }, h("h4", {}, "Items im Inventar"));
-      this.invList = itemList({ numLabel: "Anzahl", numDefault: 1,
-        initial: [["BandageDressing", 2], ["", undefined]] });
-      inv.append(this.invList);
-      form.append(inv);
-      form.append(field("Zustand der Kleidung",
-        h("select", { id: "lo-health" },
-          h("option", { value: "0.7,1.0" }, "Neuwertig"),
-          h("option", { value: "0.3,0.7" }, "Gebraucht"),
-          h("option", { value: "0.1,1.0" }, "Zufällig"))));
-    },
-    async generate() {
-      const name = $("#lo-name").value.trim() || "MeinLoadout";
-      // Beim Bearbeiten dieselbe Datei behalten, sonst Namen aus dem Preset ableiten
-      const fileName = this._file ||
-        "custom_" + ((name.toLowerCase().replace(/[^a-z0-9_-]+/g, "_")
-          .replace(/^_+|_+$/g, "")) || "loadout") + ".json";
-      const [hMin, hMax] = $("#lo-health").value.split(",").map(Number);
+    desc: "Start-Ausrüstung frisch gespawnter Spieler – 14 Slots mit Bild-Auswahl, gewichteten Alternativen, Aufsätzen/Inhalt, Cargo-Sets und Charaktertypen. (Ab DayZ 1.20 auch auf Konsole.)",
+
+    /* --- Ausgabe (custom_spawngear.json) aus dem aktuellen Zustand bauen */
+    buildPreset() {
+      const s = this.lo;
       const slotSets = [];
-      for (const [slot] of SLOTS) {
-        const item = $("#lo-slot-" + slot).value.trim();
-        if (!item) continue;
-        slotSets.push({
-          slotName: slot,
-          discreteItemSets: [{
-            itemType: item, spawnWeight: 1,
-            attributes: { healthMin: hMin, healthMax: hMax,
-                          quantityMin: -1, quantityMax: -1 },
-            simpleChildrenTypes: [], complexChildrenTypes: [],
-          }],
+      for (const slot of LOADOUT_SLOTS) {
+        const entries = s.slots[slot.id];
+        if (entries && entries.length)
+          slotSets.push({ slotName: slot.slotName,
+                          discreteItemSets: entries.map(buildItemSet) });
+      }
+      const cargo = s.cargo.filter((c) => (c.items || []).length).map(buildCargoSet);
+      return { spawnWeight: 1, name: s.name || "MeinLoadout",
+               characterTypes: s.characters.include ? Array.from(s.characters.set) : [],
+               attachmentSlotItemSets: slotSets, discreteUnsortedItemSets: cargo };
+    },
+
+    render(form) {
+      const self = this;
+      /* Zustand für dieses Tool */
+      const s = this.lo = { name: "MeinLoadout",
+        characters: { include: false, set: new Set() },
+        slots: {}, cargo: [] };
+      LOADOUT_SLOTS.forEach((sl) => (s.slots[sl.id] = []));
+
+      /* -- kleine Bausteine ------------------------------------------- */
+      const qbSelect = (val, onChange) => {
+        const sel = h("select", { class: "lo-qb", title: "QuickBar-Slot" });
+        sel.append(h("option", { value: "-1" }, "QB –"));
+        for (let i = 0; i <= 9; i++) sel.append(h("option", { value: String(i) }, "QB " + i));
+        sel.value = String(val == null ? -1 : val);
+        sel.addEventListener("change", () => onChange(parseInt(sel.value, 10)));
+        return sel;
+      };
+      const card = (cls, onclick) =>
+        h("div", { class: "item-card", title: cls, onclick },
+          itemImg(cls), h("span", { class: "nm" }, prettyName(cls)));
+
+      /* wiederverwendbarer Bild-Picker (Suche + Karten-Grid) */
+      function pickerGrid(baseList, onPick) {
+        const search = h("input", { class: "lo-search", placeholder: "Suchen… (Name eintippen)" });
+        const grid = h("div", { class: "lo-grid" });
+        function fill(term) {
+          grid.innerHTML = "";
+          const list = term && term.length >= 2 ? searchAll(term) : baseList();
+          const shown = list.slice(0, 300);
+          shown.forEach((cls) => grid.append(card(cls, () => onPick(cls))));
+          if (!shown.length) grid.append(h("p", { class: "hint" }, "Keine Treffer."));
+        }
+        search.addEventListener("input", () => fill(search.value.trim()));
+        fill("");
+        return h("div", { class: "lo-picker" }, search, grid);
+      }
+
+      /* Kind-Item-Liste (Aufsätze/Inhalt oder Cargo-Inhalt) */
+      function childList(arr) {
+        const box = h("div", { class: "lo-childbox" });
+        const list = h("div", { class: "lo-childlist" });
+        function renderList() {
+          list.innerHTML = "";
+          arr.forEach((ch, i) => {
+            list.append(h("div", { class: "lo-childrow" },
+              itemImg(ch.cls), h("span", { class: "cls" }, ch.cls),
+              qbSelect(ch.quickBar, (v) => { ch.quickBar = v; refreshJson(); }),
+              h("button", { class: "small",
+                onclick: () => { arr.splice(i, 1); renderList(); refreshJson(); } }, "✕")));
+          });
+          if (!arr.length) list.append(h("p", { class: "hint" }, "Noch nichts hinzugefügt."));
+        }
+        const picker = pickerGrid(() => catAttach(), (cls) => {
+          arr.push({ cls, quickBar: -1 }); renderList(); refreshJson();
+        });
+        box.append(list, h("details", {},
+          h("summary", {}, "+ Aufsatz / Inhalt hinzufügen"), picker));
+        box.render = renderList; renderList();
+        return box;
+      }
+
+      /* Konfig-Block für ein gewähltes Slot-Item */
+      function entryRow(slotId, entry) {
+        const head = h("div", { class: "lo-entryhead" },
+          itemImg(entry.cls), h("b", { class: "cls" }, entry.cls),
+          h("label", {}, "Gewicht ",
+            h("input", { class: "lo-weight", type: "number", min: "1",
+              value: String(entry.spawnWeight),
+              oninput: (e) => { entry.spawnWeight = num(e.target.value, 1); refreshJson(); } })),
+          qbSelect(entry.quickBar, (v) => { entry.quickBar = v; refreshJson(); }),
+          h("button", { class: "small danger",
+            onclick: () => {
+              const arr = s.slots[slotId];
+              arr.splice(arr.indexOf(entry), 1); renderSlot(slotId); refreshJson();
+            } }, "✕ Item"));
+
+        /* Zustand */
+        const condSel = h("select", { class: "lo-cond" },
+          ...LOADOUT_CONDITIONS.map(([k, l]) => h("option", { value: k }, l)));
+        condSel.value = entry.cond;
+        const hMin = h("input", { type: "number", step: "0.1", min: "0", max: "1",
+          value: String(entry.hMin), placeholder: "min",
+          oninput: (e) => { entry.hMin = num(e.target.value, 1); refreshJson(); } });
+        const hMax = h("input", { type: "number", step: "0.1", min: "0", max: "1",
+          value: String(entry.hMax), placeholder: "max",
+          oninput: (e) => { entry.hMax = num(e.target.value, 1); refreshJson(); } });
+        const customWrap = h("span", { class: "lo-custom" }, "Health ", hMin, "–", hMax);
+        const syncCustom = () => customWrap.classList.toggle("hidden", entry.cond !== "custom");
+        condSel.addEventListener("change", () => {
+          entry.cond = condSel.value; syncCustom(); refreshJson();
+        });
+        syncCustom();
+
+        const details = h("details", { class: "lo-details" },
+          h("summary", {}, "Aufsätze / Inhalt (" + (entry.children.length || 0) + ")"),
+          childList(entry.children));
+
+        return h("div", { class: "lo-entry" }, head,
+          h("div", { class: "lo-entryrow" }, "Zustand:", condSel, customWrap),
+          details);
+      }
+
+      /* -- Kopfbereich: Name + Aktionen ------------------------------- */
+      const nameInput = textInput("lo-name", s.name);
+      nameInput.addEventListener("input", () => { s.name = nameInput.value.trim(); refreshJson(); });
+      form.append(field("Name des Presets", nameInput));
+
+      const fileInput = h("input", { type: "file", accept: ".json,application/json",
+        style: "display:none", onchange: (e) => importFile(e.target.files[0]) });
+      form.append(h("div", { class: "row lo-actions" },
+        h("button", { class: "small", onclick: () => randomize() }, "🎲 Zufälliges Loadout"),
+        h("button", { class: "small", onclick: () => fileInput.click() }, "📥 Importieren"),
+        h("button", { class: "small", onclick: () => copyJson() }, "📋 JSON kopieren"),
+        h("button", { class: "small", onclick: () => downloadJson() }, "⬇️ JSON speichern"),
+        fileInput));
+
+      /* -- Slot-Reiter ------------------------------------------------ */
+      const tabBar = h("div", { class: "lo-tabs" });
+      const slotPanel = h("div", { class: "lo-slotpanel" });
+      let activeSlot = LOADOUT_SLOTS[0].id;
+      const tabButtons = {};
+      LOADOUT_SLOTS.forEach((sl) => {
+        const b = h("button", { class: "lo-tab",
+          onclick: () => { activeSlot = sl.id; updateTabs(); renderSlot(sl.id); } }, sl.label);
+        tabButtons[sl.id] = b; tabBar.append(b);
+      });
+      function updateTabs() {
+        LOADOUT_SLOTS.forEach((sl) => {
+          const n = s.slots[sl.id].length;
+          tabButtons[sl.id].classList.toggle("active", sl.id === activeSlot);
+          tabButtons[sl.id].classList.toggle("has", n > 0);
+          tabButtons[sl.id].textContent = sl.label + (n ? " (" + n + ")" : "");
         });
       }
-      const loose = [];
-      for (const row of this.invList.values()) {
-        for (let i = 0; i < Math.max(1, Math.round(row.num)); i++) loose.push(row.item);
+      function renderSlot(slotId) {
+        const sl = LOADOUT_SLOTS.find((x) => x.id === slotId);
+        slotPanel.innerHTML = "";
+        slotPanel.append(h("p", { class: "hint" },
+          "Item anklicken = zu „" + sl.label + "“ hinzufügen. Mehrere Items = " +
+          "gewichtete Zufallsauswahl. Suche findet auch Items anderer Kategorien."));
+        const picker = pickerGrid(() => catBucket(sl.bucket), (cls) => {
+          if (s.slots[slotId].some((e) => e.cls === cls)) return;
+          s.slots[slotId].push({ cls, spawnWeight: 1, cond: "pristine",
+            hMin: 1, hMax: 1, qMin: -1, qMax: -1, quickBar: -1, children: [] });
+          renderSlot(slotId); refreshJson();
+        });
+        slotPanel.append(picker);
+        const chosen = h("div", { class: "lo-chosen" });
+        s.slots[slotId].forEach((entry) => chosen.append(entryRow(slotId, entry)));
+        if (!s.slots[slotId].length)
+          chosen.append(h("p", { class: "hint" }, "Noch kein Item in diesem Slot."));
+        slotPanel.append(chosen);
+        updateTabs();
       }
-      if (!slotSets.length && !loose.length)
-        throw new Error("Bitte mindestens ein Kleidungsstück oder Item angeben.");
-      const preset = {
-        name, spawnWeight: 1, characterTypes: [],
-        attachmentSlotItemSets: slotSets,
-        discreteUnsortedItemSets: loose.length ? [{
-          name: "Startitems", spawnWeight: 1,
-          attributes: { healthMin: hMin, healthMax: hMax,
-                        quantityMin: -1, quantityMax: -1 },
-          simpleChildrenTypes: loose, complexChildrenTypes: [],
-        }] : [],
-      };
+      form.append(h("div", { class: "grp" }, h("h4", {}, "Ausrüstung nach Slot"),
+        tabBar, slotPanel));
+
+      /* -- Cargo-Sets ------------------------------------------------- */
+      const cargoWrap = h("div", { class: "lo-cargo" });
+      function renderCargo() {
+        cargoWrap.innerHTML = "";
+        s.cargo.forEach((c, i) => {
+          const nameIn = h("input", { value: c.name, placeholder: "Set-Name",
+            oninput: (e) => { c.name = e.target.value; refreshJson(); } });
+          const wIn = h("input", { type: "number", min: "1", value: String(c.spawnWeight),
+            title: "Gewicht", oninput: (e) => { c.spawnWeight = num(e.target.value, 1); refreshJson(); } });
+          const condSel = h("select", {},
+            ...LOADOUT_CONDITIONS.filter((x) => x[0] !== "custom")
+              .map(([k, l]) => h("option", { value: k }, l)));
+          condSel.value = c.cond;
+          condSel.addEventListener("change", () => { c.cond = condSel.value; refreshJson(); });
+          cargoWrap.append(h("div", { class: "lo-cargoset" },
+            h("div", { class: "lo-entryhead" }, "📦 ", nameIn, "Gewicht ", wIn, "Zustand ", condSel,
+              h("button", { class: "small danger",
+                onclick: () => { s.cargo.splice(i, 1); renderCargo(); refreshJson(); } }, "✕ Set")),
+            childList(c.items)));
+        });
+        if (!s.cargo.length)
+          cargoWrap.append(h("p", { class: "hint" }, "Keine Cargo-Sets. Cargo landet lose im Inventar des Spielers."));
+      }
+      form.append(h("div", { class: "grp" }, h("h4", {}, "Cargo-Sets (lose Inventar-Items)"),
+        cargoWrap,
+        h("button", { class: "small", onclick: () => {
+          s.cargo.push({ name: "Set" + (s.cargo.length + 1), spawnWeight: 1,
+            cond: "pristine", items: [] });
+          renderCargo(); refreshJson();
+        } }, "+ Cargo-Set")));
+
+      /* -- Charaktertypen -------------------------------------------- */
+      const charGrid = h("div", { class: "lo-chars hidden" });
+      CHARACTER_TYPES.forEach((ct) => {
+        const cb = h("input", { type: "checkbox", value: ct,
+          onchange: (e) => {
+            if (e.target.checked) s.characters.set.add(ct); else s.characters.set.delete(ct);
+            refreshJson();
+          } });
+        charGrid.append(h("label", { class: "lo-char" }, cb, ct.replace("Survivor", "")));
+      });
+      const charToggle = h("input", { type: "checkbox",
+        onchange: (e) => {
+          s.characters.include = e.target.checked;
+          charGrid.classList.toggle("hidden", !e.target.checked);
+          refreshJson();
+        } });
+      form.append(h("div", { class: "grp" },
+        h("label", { class: "row" }, charToggle,
+          " Nur für bestimmte Charaktermodelle (sonst alle)"),
+        charGrid));
+
+      /* -- Live-JSON-Vorschau ---------------------------------------- */
+      const jsonBox = h("pre", { class: "lo-json" });
+      form.append(h("div", { class: "grp" },
+        h("h4", {}, "Vorschau custom_spawngear.json"), jsonBox));
+
+      /* -- Aktionen: Import / Export / Randomize ---------------------- */
+      function refreshJson() {
+        jsonBox.textContent = JSON.stringify(self.buildPreset(), null, 2);
+      }
+      function copyJson() {
+        navigator.clipboard.writeText(jsonBox.textContent)
+          .then(() => toast("JSON in die Zwischenablage kopiert."))
+          .catch(() => toast("Kopieren nicht möglich – bitte manuell markieren.", "warn"));
+      }
+      function downloadJson() {
+        const blob = new Blob([jsonBox.textContent], { type: "application/json" });
+        const a = h("a", { href: URL.createObjectURL(blob),
+          download: (s.name || "loadout") + ".json" });
+        a.click(); URL.revokeObjectURL(a.href);
+      }
+      function loadPreset(p) {
+        s.name = p.name || "MeinLoadout";
+        nameInput.value = s.name;
+        LOADOUT_SLOTS.forEach((sl) => (s.slots[sl.id] = []));
+        s.cargo = []; s.characters = { include: false, set: new Set() };
+        const bySlotName = {};
+        LOADOUT_SLOTS.forEach((sl) => (bySlotName[sl.slotName.toLowerCase()] = sl.id));
+        (p.attachmentSlotItemSets || []).forEach((set) => {
+          const slotId = bySlotName[String(set.slotName).toLowerCase()];
+          if (!slotId) return;
+          (set.discreteItemSets || []).forEach((it) =>
+            s.slots[slotId].push(importEntry(it)));
+        });
+        (p.discreteUnsortedItemSets || []).forEach((set) => {
+          s.cargo.push({ name: set.name || "Set", spawnWeight: set.spawnWeight || 1,
+            cond: "custom", hMin: set.attributes?.healthMin ?? 1,
+            hMax: set.attributes?.healthMax ?? 1,
+            qMin: set.attributes?.quantityMin ?? -1, qMax: set.attributes?.quantityMax ?? -1,
+            items: importChildren(set) });
+        });
+        if ((p.characterTypes || []).length) {
+          s.characters.include = true;
+          p.characterTypes.forEach((ct) => s.characters.set.add(ct));
+        }
+        charToggle.checked = s.characters.include;
+        charGrid.classList.toggle("hidden", !s.characters.include);
+        charGrid.querySelectorAll("input").forEach((cb) => {
+          cb.checked = s.characters.set.has(cb.value);
+        });
+        renderSlot(activeSlot); renderCargo(); refreshJson();
+      }
+      function importEntry(it) {
+        const at = it.attributes || {};
+        return { cls: it.itemType, spawnWeight: it.spawnWeight || 1, cond: "custom",
+          hMin: at.healthMin ?? 1, hMax: at.healthMax ?? 1,
+          qMin: at.quantityMin ?? -1, qMax: at.quantityMax ?? -1,
+          quickBar: it.quickBarSlot ?? -1, children: importChildren(it) };
+      }
+      function importChildren(it) {
+        const out = [];
+        (it.simpleChildrenTypes || []).forEach((c) => out.push({ cls: c, quickBar: -1 }));
+        (it.complexChildrenTypes || []).forEach((c) => out.push({ cls: c.itemType,
+          quickBar: c.quickBarSlot ?? -1,
+          children: (c.simpleChildrenTypes || []).map((x) => ({ cls: x })) }));
+        return out;
+      }
+      function importFile(file) {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          try { loadPreset(JSON.parse(reader.result));
+            toast("Loadout importiert."); }
+          catch (err) { toast("Import fehlgeschlagen: " + err.message, "error"); }
+        };
+        reader.readAsText(file);
+      }
+      function randomize() {
+        const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+        ["Headgear", "Body", "Vest", "Legs", "Feet", "Back", "Hands"].forEach((slotId) => {
+          const sl = LOADOUT_SLOTS.find((x) => x.id === slotId);
+          const pool = catBucket(sl.bucket);
+          if (!pool.length) return;
+          const cls = pick(pool);
+          if (s.slots[slotId].some((e) => e.cls === cls)) return;
+          s.slots[slotId].push({ cls, spawnWeight: 1, cond: "pristine",
+            hMin: 1, hMax: 1, qMin: -1, qMax: -1, quickBar: -1, children: [] });
+        });
+        renderSlot(activeSlot); refreshJson();
+        toast("Zufälliges Loadout erzeugt – nach Wunsch anpassen.");
+      }
+      this._loadPreset = loadPreset;
+
+      /* Initialdarstellung */
+      updateTabs(); renderSlot(activeSlot); renderCargo(); refreshJson();
+    },
+
+    async generate() {
+      const fileName = "custom_spawngear.json";
+      const preset = this.buildPreset();
+      const items = preset.attachmentSlotItemSets.length;
+      const cargo = preset.discreteUnsortedItemSets.length;
+      if (!items && !cargo)
+        throw new Error("Bitte mindestens ein Item auswählen.");
       return [
         {
-          path: await missionPath(fileName),
-          summary: ["Preset „" + name + "“ mit " + slotSets.length +
-                    " Kleidungs-Slot(s) und " + loose.length + " Inventar-Item(s)."],
+          path: mission(fileName),
+          summary: ["Preset „" + preset.name + "“ mit " + items +
+                    " Slot-Gruppe(n) und " + cargo + " Cargo-Set(s)."],
           transform: () => JSON.stringify(preset, null, 4) + "\n",
         },
         {
-          path: await missionPath("cfggameplay.json"),
+          path: mission("cfggameplay.json"),
           summary: ["Trägt „" + fileName + "“ bei PlayerData → spawnGearPresetFiles ein" +
                     " (falls noch nicht vorhanden)."],
           transform: (current) => {
