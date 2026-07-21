@@ -746,12 +746,91 @@ ${kids}
 
   /* Katalog-Zugriff (aus loadout-catalog.js; Fallbacks falls nicht geladen) */
   const catBucket = (b) => (window.LOADOUT_CATALOG && window.LOADOUT_CATALOG[b]) || [];
+  const catContent = (c) => (window.LOADOUT_CONTENT && window.LOADOUT_CONTENT[c]) || [];
   const catAll = () => window.LOADOUT_ALL || [];
-  const catAttach = () => window.LOADOUT_ATTACH || [];
+  /* Anzeigename aus DB, sonst aus dem Klassennamen ableiten */
+  const dispName = (cls) =>
+    (window.LOADOUT_NAMES && window.LOADOUT_NAMES[String(cls).toLowerCase()]) ||
+    String(cls).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   const searchAll = (term) => {
     const t = term.toLowerCase();
-    return catAll().filter((c) => c.includes(t));
+    return catAll().filter((c) => c.toLowerCase().includes(t));
   };
+
+  /* Die 8 Inhalt-Kategorien des Aufsatz-/Inhalt-Editors (wie im Vorbild) */
+  const LOADOUT_CONTENT_CATS = [
+    ["simple", "Aufsätze"], ["complex", "Magazine"], ["food", "Nahrung"],
+    ["openedFood", "Geöffnet"], ["drinks", "Getränke"], ["looseAmmo", "Munition"],
+    ["boxedAmmo", "Mun.-Boxen"], ["misc", "Sonstiges"],
+  ];
+  const catLabel = (id) => (LOADOUT_CONTENT_CATS.find((x) => x[0] === id) || [id, id])[1];
+
+  /* Zufallsgenerator: realistische Pro-Slot-Wahrscheinlichkeiten */
+  const RANDOM_SLOT_PROB = {
+    Body: 1, Legs: 1, Feet: 1, Vest: 0.9, Headgear: 0.8, Hands: 0.8,
+    Gloves: 0.8, Back: 0.8, Hips: 0.7, shoulderL: 0.6, shoulderR: 0.6,
+    Mask: 0.6, Eyewear: 0.5, Armband: 0.5,
+  };
+  const RN_A = ["Survivor", "Wanderer", "Hunter", "Nomad", "Ranger", "Ghost",
+    "Stalker", "Drifter", "Outlaw", "Raider", "Scout", "Rogue", "Phantom",
+    "Reaper", "Wolf", "Viper", "Bandit", "Marauder"];
+  const RN_B = ["Alpha", "Bravo", "Delta", "Echo", "Storm", "Titan", "Fury",
+    "Onyx", "Raven", "Cobra", "Havoc", "Venom", "Blaze", "Frost", "Shadow",
+    "Iron", "Steel", "Thunder"];
+  const randomName = () => {
+    const p = (a) => a[Math.floor(Math.random() * a.length)];
+    return p(RN_A) + "_" + p(RN_B) + "_" + Math.floor(Math.random() * 1000);
+  };
+
+  /* --- Grobe Waffen-Kompatibilität (Datenbasis: Magazin-Benennung) ---
+   * mag_<familie>_<größe>rnd → Familien-Token; Aufsätze per Präfix-Token. */
+  const WEAPON_FAMILY = [
+    [/^(m4a1|m16|colt)/, ["stanag", "cmag"], ["m4_"]],
+    [/^aks?74u/, ["ak74"], ["aks74u", "ak_"]],
+    [/^ak74/, ["ak74"], ["ak_"]], [/^ak101/, ["ak101"], ["ak_"]],
+    [/^akm/, ["akm"], ["ak_"]],
+    [/^(vss|asval|as_val)/, ["vss", "val"], []], [/^svd/, ["svd"], []],
+    [/^saiga/, ["saiga"], []], [/^famas/, ["famas"], []], [/^aug/, ["aug"], []],
+    [/^(fal|lar)/, ["fal"], []], [/^scout/, ["scout"], []],
+    [/^ruger/, ["ruger1022"], []], [/^cz527/, ["cz527"], []],
+    [/^cz550/, ["cz550"], []], [/^cz61/, ["cz61"], []], [/^cz75/, ["cz75"], []],
+    [/^glock/, ["glock"], []], [/^fnx/, ["fnx45"], []],
+    [/^(engraved)?1911/, ["1911"], []], [/^mkii/, ["mkii"], []],
+    [/^deagle/, ["deagle"], []], [/^mp5/, ["mp5"], []], [/^ump/, ["ump"], []],
+    [/^(pp19|bizon)/, ["pp19"], []], [/^pm73/, ["pm73"], []],
+    [/^vikhr/, ["vikhr"], []], [/^ssg82/, ["ssg82"], []], [/^sv98/, ["sv98"], []],
+    [/^m14/, ["m14"], []], [/^p1_?/, ["p1"], []], [/^ij70/, ["ij70"], []],
+    [/^mosin/, [], ["mosin"]], [/^sks/, [], ["sks"]],
+  ];
+  function weaponFamily(cls) {
+    const c = String(cls).toLowerCase();
+    for (const [re, mags, attach] of WEAPON_FAMILY)
+      if (re.test(c)) return { mags, attach };
+    return null;
+  }
+  const isWeapon = (cls) =>
+    (window.LOADOUT_WEAPONS || []).includes(cls) ||
+    ((window.LOADOUT_CATALOG && window.LOADOUT_CATALOG.Hands) || []).includes(cls);
+
+  /* Pool einer Inhalt-Kategorie, für Waffen grob auf die Familie gefiltert */
+  function contentPool(cat, parentCls, showAll) {
+    const pool = catContent(cat);
+    if (showAll || !parentCls || !isWeapon(parentCls)) return pool;
+    const fam = weaponFamily(parentCls);
+    if (cat === "complex") {                       // Magazine
+      if (!fam || !fam.mags.length) return [];      // interner Lader → keine
+      return pool.filter((c) =>
+        fam.mags.some((t) => c.toLowerCase().includes("_" + t + "_")));
+    }
+    if (cat === "simple") {                          // Optiken universell + Familie
+      if (!fam) return pool;
+      const lc = (x) => x.toLowerCase();
+      return pool.filter((x) =>
+        /optic|scope|sight|reflex/.test(lc(x)) ||
+        fam.attach.some((t) => lc(x).includes(t)));
+    }
+    return pool;                                     // Food/Ammo/Misc: universell
+  }
 
   /* Zustand-Preset → [healthMin, healthMax] für einen Eintrag */
   function condHealth(entry) {
@@ -770,7 +849,7 @@ ${kids}
     const simple = [], complex = [];
     (children || []).forEach((ch) => {
       const hasSub = ch.children && ch.children.length;
-      if ((ch.quickBar != null && ch.quickBar >= 0) || hasSub) {
+      if (ch.cat === "complex" || (ch.quickBar != null && ch.quickBar >= 0) || hasSub) {
         const cx = { itemType: ch.cls, attributes: attrs,
                      quickBarSlot: ch.quickBar >= 0 ? ch.quickBar : -1 };
         if (hasSub) {
@@ -839,9 +918,9 @@ ${kids}
       };
       const card = (cls, onclick) =>
         h("div", { class: "item-card", title: cls, onclick },
-          itemImg(cls), h("span", { class: "nm" }, prettyName(cls)));
+          itemImg(cls), h("span", { class: "nm" }, dispName(cls)));
 
-      /* wiederverwendbarer Bild-Picker (Suche + Karten-Grid) */
+      /* wiederverwendbarer Bild-Picker (Suche + Karten-Grid, für Slot-Items) */
       function pickerGrid(baseList, onPick) {
         const search = h("input", { class: "lo-search", placeholder: "Suchen… (Name eintippen)" });
         const grid = h("div", { class: "lo-grid" });
@@ -857,26 +936,62 @@ ${kids}
         return h("div", { class: "lo-picker" }, search, grid);
       }
 
-      /* Kind-Item-Liste (Aufsätze/Inhalt oder Cargo-Inhalt) */
-      function childList(arr) {
+      /* Aufsatz-/Inhalt-Editor pro Item: 8 Kategorie-Reiter + Filter +
+       * QuickSlot je Eintrag. parentCls = übergeordnetes Item (für Waffen-
+       * Kompatibilität); null bei Cargo-Sets. */
+      function contentPicker(arr, parentCls) {
         const box = h("div", { class: "lo-childbox" });
         const list = h("div", { class: "lo-childlist" });
         function renderList() {
           list.innerHTML = "";
           arr.forEach((ch, i) => {
             list.append(h("div", { class: "lo-childrow" },
-              itemImg(ch.cls), h("span", { class: "cls" }, ch.cls),
+              itemImg(ch.cls), h("span", { class: "cls" }, dispName(ch.cls)),
+              h("span", { class: "lo-cattag" }, catLabel(ch.cat || "misc")),
               qbSelect(ch.quickBar, (v) => { ch.quickBar = v; refreshJson(); }),
               h("button", { class: "small",
                 onclick: () => { arr.splice(i, 1); renderList(); refreshJson(); } }, "✕")));
           });
           if (!arr.length) list.append(h("p", { class: "hint" }, "Noch nichts hinzugefügt."));
         }
-        const picker = pickerGrid(() => catAttach(), (cls) => {
-          arr.push({ cls, quickBar: -1 }); renderList(); refreshJson();
+        let activeCat = "simple", showAll = false;
+        const catbar = h("div", { class: "lo-catbar" });
+        const catButtons = {};
+        LOADOUT_CONTENT_CATS.forEach(([id, label]) => {
+          const b = h("button", { class: "lo-catbtn", onclick: () => {
+            activeCat = id; showAll = false; showAllBtn.classList.remove("on");
+            search.value = ""; syncCats(); fillGrid("");
+          } }, label);
+          catButtons[id] = b; catbar.append(b);
         });
-        box.append(list, h("details", {},
-          h("summary", {}, "+ Aufsatz / Inhalt hinzufügen"), picker));
+        const showAllBtn = h("button", { class: "small lo-showall", onclick: () => {
+          showAll = !showAll; showAllBtn.classList.toggle("on", showAll);
+          fillGrid(search.value.trim());
+        } }, "Alle anzeigen");
+        const search = h("input", { class: "lo-search", placeholder: "Filter / Suche…" });
+        const grid = h("div", { class: "lo-grid" });
+        function syncCats() {
+          LOADOUT_CONTENT_CATS.forEach(([id]) =>
+            catButtons[id].classList.toggle("active", id === activeCat));
+        }
+        function fillGrid(term) {
+          grid.innerHTML = "";
+          const listv = (term && term.length >= 2)
+            ? searchAll(term) : contentPool(activeCat, parentCls, showAll);
+          const shown = listv.slice(0, 300);
+          shown.forEach((cls) => grid.append(card(cls, () => {
+            arr.push({ cls, cat: activeCat, quickBar: -1 }); renderList(); refreshJson();
+          })));
+          if (!shown.length) grid.append(h("p", { class: "hint" },
+            (activeCat === "complex" && parentCls && !showAll)
+              ? "Keine passenden Magazine (evtl. interner Lader) – „Alle anzeigen“."
+              : "Keine Treffer."));
+        }
+        search.addEventListener("input", () => fillGrid(search.value.trim()));
+        syncCats(); fillGrid("");
+        box.append(list, h("details", { class: "lo-addbox" },
+          h("summary", {}, "+ Aufsatz / Inhalt hinzufügen"),
+          catbar, h("div", { class: "row lo-addctl" }, search, showAllBtn), grid));
         box.render = renderList; renderList();
         return box;
       }
@@ -915,7 +1030,7 @@ ${kids}
 
         const details = h("details", { class: "lo-details" },
           h("summary", {}, "Aufsätze / Inhalt (" + (entry.children.length || 0) + ")"),
-          childList(entry.children));
+          contentPicker(entry.children, entry.cls));
 
         return h("div", { class: "lo-entry" }, head,
           h("div", { class: "lo-entryrow" }, "Zustand:", condSel, customWrap),
@@ -995,7 +1110,7 @@ ${kids}
             h("div", { class: "lo-entryhead" }, "📦 ", nameIn, "Gewicht ", wIn, "Zustand ", condSel,
               h("button", { class: "small danger",
                 onclick: () => { s.cargo.splice(i, 1); renderCargo(); refreshJson(); } }, "✕ Set")),
-            childList(c.items)));
+            contentPicker(c.items, null)));
         });
         if (!s.cargo.length)
           cargoWrap.append(h("p", { class: "hint" }, "Keine Cargo-Sets. Cargo landet lose im Inventar des Spielers."));
@@ -1106,17 +1221,38 @@ ${kids}
         reader.readAsText(file);
       }
       function randomize() {
+        const hasAny = LOADOUT_SLOTS.some((sl) => s.slots[sl.id].length);
+        if (hasAny && !confirm(
+          "Zufälliges Loadout erzeugen? Ersetzt die aktuelle Slot-Auswahl."))
+          return;
         const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-        ["Headgear", "Body", "Vest", "Legs", "Feet", "Back", "Hands"].forEach((slotId) => {
-          const sl = LOADOUT_SLOTS.find((x) => x.id === slotId);
+        LOADOUT_SLOTS.forEach((sl) => (s.slots[sl.id] = []));
+        s.name = randomName(); nameInput.value = s.name;
+        LOADOUT_SLOTS.forEach((sl) => {
+          if (Math.random() > (RANDOM_SLOT_PROB[sl.id] ?? 0.5)) return;
           const pool = catBucket(sl.bucket);
           if (!pool.length) return;
           const cls = pick(pool);
-          if (s.slots[slotId].some((e) => e.cls === cls)) return;
-          s.slots[slotId].push({ cls, spawnWeight: 1, cond: "pristine",
-            hMin: 1, hMax: 1, qMin: -1, qMax: -1, quickBar: -1, children: [] });
+          if (s.slots[sl.id].some((e) => e.cls === cls)) return;
+          const cond = pick(["pristine", "pristine", "worn", "worn", "damaged", "random"]);
+          s.slots[sl.id].push({ cls, spawnWeight: 1, cond,
+            hMin: 1, hMax: 1, qMin: -1, qMax: -1,
+            quickBar: Math.random() < 0.8 ? -1 : Math.floor(Math.random() * 10),
+            children: [] });
         });
-        renderSlot(activeSlot); refreshJson();
+        s.characters = { include: false, set: new Set() };
+        if (Math.random() < 0.5) {
+          s.characters.include = true;
+          const shuffled = CHARACTER_TYPES.slice().sort(() => Math.random() - 0.5);
+          shuffled.slice(0, 1 + Math.floor(Math.random() * 3))
+            .forEach((ct) => s.characters.set.add(ct));
+        }
+        charToggle.checked = s.characters.include;
+        charGrid.classList.toggle("hidden", !s.characters.include);
+        charGrid.querySelectorAll("input").forEach((cb) => {
+          cb.checked = s.characters.set.has(cb.value);
+        });
+        renderSlot(activeSlot); updateTabs(); refreshJson();
         toast("Zufälliges Loadout erzeugt – nach Wunsch anpassen.");
       }
       this._loadPreset = loadPreset;

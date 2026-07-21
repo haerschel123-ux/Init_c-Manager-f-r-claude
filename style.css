@@ -337,6 +337,22 @@ button.small.danger { color: var(--warn); border-color: var(--warn); }
 .lo-childrow .item-img.noimg { visibility: hidden; }
 .lo-childrow .cls { flex: 1 1 auto; font-family: monospace; font-size: 12px; }
 .lo-grid.small, .lo-childbox .lo-grid { max-height: 200px; }
+/* Aufsatz-/Inhalt-Editor: 8 Kategorie-Reiter */
+.lo-catbar { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.lo-catbtn {
+  padding: 3px 8px; font-size: 12px; border: 1px solid var(--border);
+  background: var(--bg2); border-radius: 6px; cursor: pointer; color: var(--muted);
+}
+.lo-catbtn:hover { border-color: var(--accent); color: var(--text); }
+.lo-catbtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.lo-addctl { gap: 6px; align-items: center; margin: 4px 0; }
+.lo-addctl .lo-search { flex: 1 1 auto; margin-bottom: 0; }
+.lo-showall { flex: 0 0 auto; }
+.lo-showall.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.lo-cattag {
+  font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 5px; padding: 1px 5px; flex: 0 0 auto;
+}
 .lo-cargo { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
 .lo-chars {
   display: grid; gap: 4px 10px; margin-top: 8px;
