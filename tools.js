@@ -1263,6 +1263,7 @@ ${kids}
 
     async generate() {
       const fileName = "custom_spawngear.json";
+      const filePath = "custom/" + fileName;   // Preset gehört in den Ordner „custom“
       const preset = this.buildPreset();
       const items = preset.attachmentSlotItemSets.length;
       const cargo = preset.discreteUnsortedItemSets.length;
@@ -1270,9 +1271,9 @@ ${kids}
         throw new Error("Bitte mindestens ein Item auswählen.");
       return [
         {
-          path: mission(fileName),
+          path: mission(filePath),
           summary: ["Preset „" + preset.name + "“ mit " + items +
-                    " Slot-Gruppe(n) und " + cargo + " Cargo-Set(s)."],
+                    " Slot-Gruppe(n) und " + cargo + " Cargo-Set(s) → " + filePath + "."],
           transform: () => JSON.stringify(preset, null, 4) + "\n",
         },
         {
