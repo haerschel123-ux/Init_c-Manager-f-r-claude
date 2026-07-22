@@ -1262,9 +1262,12 @@ ${kids}
     },
 
     async generate() {
-      const fileName = "custom_spawngear.json";
-      const filePath = "custom/" + fileName;   // Preset gehört in den Ordner „custom“
       const preset = this.buildPreset();
+      // Dateiname = Preset-Name (nur unzulässige Zeichen ersetzt), Ordner „custom“
+      const base = (preset.name || "").trim()
+        .replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "loadout";
+      const fileName = base + ".json";
+      const filePath = "custom/" + fileName;
       const items = preset.attachmentSlotItemSets.length;
       const cargo = preset.discreteUnsortedItemSets.length;
       if (!items && !cargo)
