@@ -782,6 +782,10 @@ ${kids}
     return p(RN_A) + "_" + p(RN_B) + "_" + Math.floor(Math.random() * 1000);
   };
 
+  /* Dateibasis aus dem Preset-Namen (unzulässige Zeichen → _) */
+  const loFileBase = (name) => (name || "").trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "loadout";
+
   /* --- Grobe Waffen-Kompatibilität (Datenbasis: Magazin-Benennung) ---
    * mag_<familie>_<größe>rnd → Familien-Token; Aufsätze per Präfix-Token. */
   const WEAPON_FAMILY = [
@@ -1146,11 +1150,12 @@ ${kids}
 
       /* -- Live-JSON-Vorschau ---------------------------------------- */
       const jsonBox = h("pre", { class: "lo-json" });
-      form.append(h("div", { class: "grp" },
-        h("h4", {}, "Vorschau custom_spawngear.json"), jsonBox));
+      const jsonHead = h("h4", {}, "Vorschau");
+      form.append(h("div", { class: "grp" }, jsonHead, jsonBox));
 
       /* -- Aktionen: Import / Export / Randomize ---------------------- */
       function refreshJson() {
+        jsonHead.textContent = "Vorschau · Datei: custom/" + loFileBase(s.name) + ".json";
         jsonBox.textContent = JSON.stringify(self.buildPreset(), null, 2);
       }
       function copyJson() {
@@ -1264,9 +1269,7 @@ ${kids}
     async generate() {
       const preset = this.buildPreset();
       // Dateiname = Preset-Name (nur unzulässige Zeichen ersetzt), Ordner „custom“
-      const base = (preset.name || "").trim()
-        .replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "loadout";
-      const fileName = base + ".json";
+      const fileName = loFileBase(preset.name) + ".json";
       const filePath = "custom/" + fileName;
       const items = preset.attachmentSlotItemSets.length;
       const cargo = preset.discreteUnsortedItemSets.length;
