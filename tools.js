@@ -125,57 +125,38 @@ const Tools = (() => {
 
   /* ===================================================== XML-Werkzeuge */
 
-  /* Nur noch zum LESEN (Event-Vorlagen, Vorbelegungen) – geschrieben wird
-     unten per chirurgischem Text-Edit. */
   function parseXml(text) {
     const doc = new DOMParser().parseFromString(text, "text/xml");
     if (doc.querySelector("parsererror")) throw new Error("Datei enthält fehlerhaftes XML.");
     return doc;
   }
 
-  /* ------------------------------------ Chirurgische Text-Edits (XML) --
-   * Statt die ganze Datei zu parsen und komplett neu zu schreiben, wird nur
-   * der betroffene Block ersetzt bzw. eingefügt. Der Rest der Datei bleibt
-   * Byte für Byte erhalten – und Fehler an anderen Stellen der Datei
-   * stören nicht. */
-
-  const escRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-  /* Zeilenende-Stil der Datei übernehmen (Windows \r\n vs. \n) */
-  const eol = (text) => (text.includes("\r\n") ? "\r\n" : "\n");
-
-  /* `<tag … name="X" …>…</tag>` (oder self-closing) samt Einrückung finden */
-  function findNamedBlock(text, tag, name) {
-    const re = new RegExp(
-      "[ \\t]*<" + tag + "(?=[\\s/>])[^>]*\\bname=([\"'])" + escRe(name) + "\\1[^>]*" +
-      "(?:/>|>[\\s\\S]*?</" + tag + "\\s*>)");
-    const m = re.exec(text);
-    return m ? { start: m.index, end: m.index + m[0].length, block: m[0] } : null;
+  function dumpXml(doc) {
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+      new XMLSerializer().serializeToString(doc.documentElement) + "\n";
   }
 
-  /* Snippet als neuen Eintrag direkt vor dem schließenden Root-Tag einfügen */
-  function insertIntoRoot(text, rootTag, snippet) {
-    const idx = text.lastIndexOf("</" + rootTag);
-    if (idx === -1)
-      throw new Error("Kein schließendes </" + rootTag + "> in der Datei gefunden – " +
-                      "ist das die richtige Datei?");
-    const nl = eol(text);
-    let head = text.slice(0, idx);
-    // Einrückung der Schlusszeile abtrennen und hinterher wiederherstellen
-    const closeIndent = (/(?:^|\n)([ \t]*)$/.exec(head) || [, ""])[1];
-    head = head.slice(0, head.length - closeIndent.length);
-    if (head && !head.endsWith("\n")) head += nl;
-    return head + "    " + snippet.replace(/\n/g, nl) + nl +
-           closeIndent + text.slice(idx);
+  /* Ein fertig eingerücktes XML-Schnipsel in ein Dokument importieren */
+  function importSnippet(doc, snippet) {
+    const frag = new DOMParser().parseFromString(snippet, "text/xml");
+    if (frag.querySelector("parsererror")) throw new Error("Interner XML-Fehler im Generator.");
+    return doc.importNode(frag.documentElement, true);
   }
 
-  /* Benannten Block ersetzen oder – falls nicht vorhanden – neu einfügen */
-  function upsertNamedBlock(text, rootTag, tag, name, snippet) {
-    const found = findNamedBlock(text, tag, name);
-    if (!found) return insertIntoRoot(text, rootTag, snippet);
-    const indent = (/^[ \t]*/.exec(found.block) || [""])[0];
-    return text.slice(0, found.start) + indent +
-           snippet.replace(/\n/g, eol(text)) + text.slice(found.end);
+  /* Element mit Namen ersetzen oder ans Ende der Wurzel anhängen */
+  function upsertRootChild(doc, matchSelector, snippet) {
+    const node = importSnippet(doc, snippet);
+    const existing = doc.querySelector(matchSelector);
+    if (existing) {
+      const prev = existing.previousSibling;
+      if (prev && prev.nodeType === 3) prev.remove();
+      existing.replaceWith(doc.createTextNode("\n    "), node);
+    } else {
+      const root = doc.documentElement;
+      const last = root.lastChild;
+      if (last && last.nodeType === 3) last.remove();
+      root.append(doc.createTextNode("\n    "), node, doc.createTextNode("\n"));
+    }
   }
 
   const fmtNum = (v) => {
@@ -188,6 +169,7 @@ const Tools = (() => {
 
   /* events.xml: Event komplett anlegen/ersetzen */
   function upsertEvent(text, def) {
+    const doc = parseXml(text);
     const flags = def.flags || { deletable: 0, init_random: 0, remove_damaged: 1 };
     const kids = (def.children || []).map((c) =>
       `        <child lootmax="${c.lootmax ?? 0}" lootmin="${c.lootmin ?? 0}" ` +
@@ -210,149 +192,122 @@ const Tools = (() => {
 ${kids}
         </children>
     </event>`;
-    return upsertNamedBlock(text, "events", "event", def.name, snippet);
+    upsertRootChild(doc, `event[name="${def.name}"]`, snippet);
+    return dumpXml(doc);
   }
 
   /* events.xml: nur Zahlenfelder eines vorhandenen Events ändern */
   function updateEventCounts(text, name, values) {
-    const found = findNamedBlock(text, "event", name);
-    if (!found) throw new Error(`Event "${name}" nicht in events.xml gefunden.`);
-    let block = found.block;
-    const nl = eol(text);
+    const doc = parseXml(text);
+    const event = doc.querySelector(`event[name="${name}"]`);
+    if (!event) throw new Error(`Event "${name}" nicht in events.xml gefunden.`);
     for (const [field, value] of Object.entries(values)) {
-      const re = new RegExp("(<" + field + "\\s*>)[^<]*(</" + field + "\\s*>)");
-      if (re.test(block)) {
-        block = block.replace(re, "$1" + value + "$2");
-      } else {
-        block = block.replace(/(<event[^>]*>)/,
-          "$1" + nl + "        <" + field + ">" + value + "</" + field + ">");
+      let child = event.querySelector(":scope > " + field);
+      if (!child) {
+        child = doc.createElement(field);
+        event.prepend(child);
       }
+      child.textContent = String(value);
     }
-    return text.slice(0, found.start) + block + text.slice(found.end);
-  }
-
-  /* cfgeventspawns.xml: Event-Block holen oder leer anlegen; self-closing
-     Blöcke (<event …/>) werden zum offenen Block erweitert. */
-  function ensureSpawnEventBlock(text, name) {
-    let found = findNamedBlock(text, "event", name);
-    if (!found) {
-      text = insertIntoRoot(text, "eventposdef",
-        `<event name="${escXml(name)}">\n    </event>`);
-      found = findNamedBlock(text, "event", name);
-    }
-    let block = found.block;
-    if (/\/>\s*$/.test(block))
-      block = block.replace(/\s*\/>\s*$/, ">" + eol(text) + "    </event>");
-    return { text, found, block };
+    return dumpXml(doc);
   }
 
   /* cfgeventspawns.xml: Positionen eines Events setzen/ergänzen */
   function upsertEventspawns(text, name, positions, mode) {
-    const ctx = ensureSpawnEventBlock(text, name);
-    text = ctx.text;
-    let block = ctx.block;
-    const nl = eol(text);
-    const existing = new Set();
-    if (mode === "replace") {
-      block = block.replace(/[ \t]*<pos\b[^>]*\/>[ \t]*\r?\n?/g, "");
-    } else {
-      for (const m of block.matchAll(/<pos\b[^>]*?\bx="([^"]+)"[^>]*?\bz="([^"]+)"/g))
-        existing.add(Math.round(Number(m[1])) + "/" + Math.round(Number(m[2])));
+    const doc = parseXml(text);
+    let event = doc.querySelector(`event[name="${name}"]`);
+    if (!event) {
+      event = doc.createElement("event");
+      event.setAttribute("name", name);
+      const root = doc.documentElement;
+      const last = root.lastChild;
+      if (last && last.nodeType === 3) last.remove();
+      root.append(doc.createTextNode("\n    "), event, doc.createTextNode("\n"));
     }
-    let added = 0, lines = "";
+    const existing = new Set(Array.from(event.querySelectorAll("pos")).map(
+      (p) => Math.round(p.getAttribute("x")) + "/" + Math.round(p.getAttribute("z"))));
+    if (mode === "replace") {
+      event.querySelectorAll("pos").forEach((p) => {
+        if (p.previousSibling && p.previousSibling.nodeType === 3) p.previousSibling.remove();
+        p.remove();
+      });
+      existing.clear();
+    }
+    let added = 0;
     for (const point of positions) {
       const key = Math.round(point.x) + "/" + Math.round(point.z);
       if (existing.has(key)) continue;
       existing.add(key);
-      lines += '        <pos x="' + fmtNum(point.x) + '" z="' + fmtNum(point.z) +
-               '" a="' + fmtNum(point.a || 0) + '"/>' + nl;
+      const pos = doc.createElement("pos");
+      pos.setAttribute("x", fmtNum(point.x));
+      pos.setAttribute("z", fmtNum(point.z));
+      pos.setAttribute("a", fmtNum(point.a || 0));
+      event.append(doc.createTextNode("\n        "), pos);
       added += 1;
     }
-    block = block.replace(/([ \t]*)<\/event\s*>$/, lines + "$1</event>");
-    return { text: text.slice(0, ctx.found.start) + block + text.slice(ctx.found.end),
-             added };
+    if (added || mode === "replace") {
+      const last = event.lastChild;
+      if (!(last && last.nodeType === 3 && last.textContent.includes("\n")))
+        event.append(doc.createTextNode("\n    "));
+    }
+    return { text: dumpXml(doc), added };
   }
 
   /* cfgeventspawns.xml: Zonen (<zone> mit Bewegungsradius) eines Events setzen –
      korrektes Format für Zombie-Horden. Ersetzt vorhandene zone/pos des Events. */
   function writeEventZones(text, name, zones) {
-    const ctx = ensureSpawnEventBlock(text, name);
-    text = ctx.text;
-    let block = ctx.block;
-    const nl = eol(text);
-    block = block.replace(/[ \t]*<(?:zone|pos)\b[^>]*\/>[ \t]*\r?\n?/g, "");
-    let lines = "";
-    for (const z of zones) {
-      lines += '        <zone smin="' + z.smin + '" smax="' + z.smax +
-               '" dmin="' + z.dmin + '" dmax="' + z.dmax + '" r="' + z.r +
-               '" x="' + fmtNum(z.x) + '" y="' + fmtNum(z.y || 0) +
-               '" z="' + fmtNum(z.z) + '"/>' + nl;
+    const doc = parseXml(text);
+    let event = doc.querySelector(`event[name="${name}"]`);
+    if (!event) {
+      event = doc.createElement("event");
+      event.setAttribute("name", name);
+      const root = doc.documentElement;
+      const last = root.lastChild;
+      if (last && last.nodeType === 3) last.remove();
+      root.append(doc.createTextNode("\n    "), event, doc.createTextNode("\n"));
     }
-    block = block.replace(/([ \t]*)<\/event\s*>$/, lines + "$1</event>");
-    return text.slice(0, ctx.found.start) + block + text.slice(ctx.found.end);
+    event.querySelectorAll("zone, pos").forEach((z) => {
+      if (z.previousSibling && z.previousSibling.nodeType === 3) z.previousSibling.remove();
+      z.remove();
+    });
+    for (const z of zones) {
+      const zone = doc.createElement("zone");
+      zone.setAttribute("smin", z.smin); zone.setAttribute("smax", z.smax);
+      zone.setAttribute("dmin", z.dmin); zone.setAttribute("dmax", z.dmax);
+      zone.setAttribute("r", z.r);
+      zone.setAttribute("x", fmtNum(z.x));
+      zone.setAttribute("y", fmtNum(z.y || 0));
+      zone.setAttribute("z", fmtNum(z.z));
+      event.append(doc.createTextNode("\n        "), zone);
+    }
+    event.append(doc.createTextNode("\n    "));
+    return dumpXml(doc);
   }
 
   /* cfgspawnabletypes.xml: <type>-Eintrag anlegen/ersetzen.
      rows: [{kind:"attachments"|"cargo", item, chance(0-1)}] */
   function upsertSpawnableType(text, name, rows) {
+    const doc = parseXml(text);
     const blocks = rows.map((r) =>
       `        <${r.kind} chance="${(Number(r.chance) || 0).toFixed(2)}">\n` +
       `            <item name="${escXml(r.item)}" chance="1.00"/>\n` +
       `        </${r.kind}>`).join("\n");
     const snippet = `<type name="${escXml(name)}">\n${blocks}\n    </type>`;
-    return upsertNamedBlock(text, "spawnabletypes", "type", name, snippet);
+    upsertRootChild(doc, `type[name="${name}"]`, snippet);
+    return dumpXml(doc);
   }
 
   /* ================================================== Datei-Zugriff */
 
   const mission = (rel) => (App.state.mission_dir || "") + "/" + rel;
 
-  /* Der Nitrado-Dateiserver ist case-sensitiv – die tatsächliche Schreibweise
-     einer Datei im Missionsordner nachschlagen (z.B. cfgEffectArea.json),
-     damit vorhandene Dateien ergänzt statt doppelt angelegt werden. */
-  let missionFiles = null;
-  async function missionPath(rel) {
-    if (rel.includes("/")) return mission(rel);   // Unterordner: unverändert
-    try {
-      if (!missionFiles) {
-        const data = await api("/api/files?dir=" +
-          encodeURIComponent(App.state.mission_dir || ""));
-        missionFiles = data.entries.filter((e) => e.type === "file").map((e) => e.name);
-      }
-      const hit = missionFiles.find((n) => n.toLowerCase() === rel.toLowerCase());
-      return mission(hit || rel);
-    } catch (err) {
-      return mission(rel);
-    }
-  }
-
   async function readOrNull(path) {
     try {
       return (await api("/api/file?path=" + encodeURIComponent(path))).content;
     } catch (err) {
       const msg = String(err.message || "");
-      if (/404|nicht gefunden|doesn't exist|does not exist|fehlgeschlagen \(4/i.test(msg)) return null;
+      if (/404|nicht gefunden|fehlgeschlagen \(4/i.test(msg)) return null;
       throw err;
-    }
-  }
-
-  /* Datei als XML-Dokument lesen – null bei "fehlt" oder Parse-Fehler.
-     (Vorbelegungen sind optional und dürfen das Tool nie blockieren.) */
-  async function readXmlOrNull(path) {
-    try {
-      const text = await readOrNull(path);
-      return text ? parseXml(text) : null;
-    } catch (err) {
-      return null;
-    }
-  }
-
-  async function readJsonOrNull(path) {
-    try {
-      const text = await readOrNull(path);
-      return text ? JSON.parse(text) : null;
-    } catch (err) {
-      return null;
     }
   }
 
@@ -384,15 +339,6 @@ ${kids}
 
   function field(label, input) {
     return h("div", { class: "field" }, h("label", { class: "fl" }, label), input);
-  }
-
-  /* Auswahl "Neu anlegen oder vorhandenen Eintrag bearbeiten": Dropdown mit
-     allen vorhandenen Einträgen; bei Auswahl füllt onPick das Formular. */
-  function loadPicker(newLabel, names, onPick) {
-    const sel = h("select", {}, h("option", { value: "" }, newLabel));
-    for (const n of names) sel.append(h("option", { value: n }, n));
-    sel.addEventListener("change", () => onPick(sel.value));
-    return field("Neu oder bearbeiten?", sel);
   }
 
   function textInput(id, value, placeholder, datalist) {
@@ -462,10 +408,6 @@ ${kids}
       item: r.dataset.type, num: num(r.querySelector(".num").value, 3),
     }));
     wrap.add = addZombie;
-    wrap.setValues = (list) => {
-      rows.innerHTML = "";
-      (list || []).forEach((z) => addZombie(z.item, z.num));
-    };
     return wrap;
   }
 
@@ -1303,100 +1245,354 @@ ${kids}
 
   /* ------------------------------------------------ 2. Gas-Zonen Builder */
 
+  /* Aus Zonen-Objekten die cfgeffectarea-„Areas“ bauen (geteilt: Save + Export) */
+  function gasAreasFromZones(zones) {
+    return zones.map((z) => ({
+      AreaName: z.name,
+      Type: "ContaminatedArea_Static",
+      TriggerType: "ContaminatedTrigger",
+      Data: {
+        Pos: [z.x, 0, z.z], Radius: z.radius,
+        PosHeight: z.posHeight, NegHeight: z.negHeight,
+        InnerPartDist: z.innerPartDist, OuterOffset: z.outerOffset,
+        ParticleName: z.particle,
+      },
+      PlayerData: {
+        AroundPartName: "graphics/particles/contaminated_area_gas_around",
+        TinyPartName: "graphics/particles/contaminated_area_gas_around_tiny",
+        PPERequesterType: "PPERequester_ContaminatedAreaTint",
+      },
+    }));
+  }
+
   registry.push({
     id: "gaszone", icon: "☣️", title: "Gas-Zonen Builder",
-    desc: "Statische Kontaminationszonen (wie Rify/Pavlovo) neu anlegen oder vorhandene bearbeiten – mit Partikel-Effekt und sicheren Teleport-Punkten für Spieler, die in der Zone einloggen.",
-    async render(form) {
-      const eff = await readJsonOrNull(await missionPath("cfgEffectArea.json"));
-      const areas = (eff && Array.isArray(eff.Areas)) ? eff.Areas : [];
-      form.append(loadPicker("– Neue Gaszone erstellen –",
-        areas.map((a) => a.AreaName).filter(Boolean), (name) => {
-        const area = areas.find((a) => a.AreaName === name);
-        if (!area) return;
-        const d = area.Data || {};
-        $("#gz-name").value = area.AreaName;
-        $("#gz-radius").value = d.Radius ?? 150;
-        $("#gz-posheight").value = d.PosHeight ?? 20;
-        $("#gz-negheight").value = d.NegHeight ?? 3;
-        $("#gz-innerpart").value = d.InnerPartDist ?? 100;
-        $("#gz-outeroffset").value = d.OuterOffset ?? 20;
-        if (Array.from($("#gz-particle").options).some((o) => o.value === d.ParticleName))
-          $("#gz-particle").value = d.ParticleName;
-        const p = d.Pos || [0, 0, 0];
-        this.pos.setValues([{ x: p[0], z: p[2] }]);
-        this.safe.setValues((Array.isArray(eff.SafePositions) ? eff.SafePositions : [])
-          .map(([x, z]) => ({ x, z })));
-        toast("Gaszone „" + name + "“ geladen – anpassen und Vorschau öffnen.");
-      }));
-      form.append(field("Name der Zone", textInput("gz-name", "MeineGasZone")));
+    desc: "Kontaminationszonen direkt auf der Karte zeichnen (Kreis ziehen), pro Zone konfigurieren, sichere Teleport-Punkte setzen – schreibt cfgEffectArea.json.",
+
+    render(form) {
+      const self = this;
+      const shared = window.DayZMapShared;
+      const gz = this.gz = {
+        zones: [], safe: [], map: null, mapKey: shared.currentKey(),
+        cityGroup: null, drawGroup: null, safeGroup: null, editing: null,
+        counter: 1, drawMode: false, safeMode: false,
+        showCities: true, showZones: true, showSafe: true,
+        defaults: { posHeight: 20, negHeight: 3, innerPartDist: 100,
+                    outerOffset: 20, particle: GAS_PARTICLES[0][0] },
+      };
+
+      form.append(h("p", { class: "hint" },
+        "Auf der Karte einen Kreis ziehen = neue Gaszone (in der Mitte drücken " +
+        "und ziehen). Ctrl+Klick = SafePosition. Zone/Kreis anklicken = " +
+        "konfigurieren. Am Handy: „+ Zone per Koordinaten“ unten nutzen."));
+
+      /* -- Ebenen-Umschalter -------------------------------------------- */
+      const switchRow = h("div", { class: "map-switch gz-switch" });
+      Object.entries(shared.MAPS).forEach(([key, cfg]) =>
+        switchRow.append(h("button", { "data-mapkey": key,
+          onclick: () => switchMap(key) }, cfg.label)));
+      form.append(field("Karte", switchRow));
+
+      /* -- Toggles ------------------------------------------------------ */
+      const tgCity = h("input", { type: "checkbox", checked: "checked",
+        onchange: (e) => { gz.showCities = e.target.checked; applyToggles(); } });
+      const tgZone = h("input", { type: "checkbox", checked: "checked",
+        onchange: (e) => { gz.showZones = e.target.checked; applyToggles(); } });
+      const tgSafe = h("input", { type: "checkbox", checked: "checked",
+        onchange: (e) => { gz.showSafe = e.target.checked; applyToggles(); } });
+      form.append(h("div", { class: "row gz-toggles" },
+        h("label", {}, tgCity, " Ortsnamen"),
+        h("label", {}, tgZone, " Gaszonen"),
+        h("label", {}, tgSafe, " SafePositions")));
+
+      /* -- Werkzeugleiste ----------------------------------------------- */
+      const drawBtn = h("button", { class: "small", onclick: () => toggleDraw() }, "➕ Zone zeichnen");
+      const safeBtn = h("button", { class: "small", onclick: () => toggleSafe() }, "＋ SafePosition");
+      form.append(h("div", { class: "row gz-tools" }, drawBtn, safeBtn,
+        h("button", { class: "small danger", onclick: () => clearZones() }, "Zonen leeren"),
+        h("button", { class: "small danger", onclick: () => clearSafe() }, "SafePos leeren"),
+        h("button", { class: "small", onclick: () => downloadJson() }, "⬇️ cfgEffectArea.json")));
+
+      /* -- Karte + Koordinaten-Overlay ---------------------------------- */
+      const mapEl = h("div", { class: "gz-map" });
+      const coordEl = h("div", { class: "gz-coord" }, "X – | Z –");
+      form.append(h("div", { class: "gz-mapwrap" }, mapEl, coordEl));
+
+      /* -- Zonen-Liste -------------------------------------------------- */
+      const zoneCount = h("span", {}, "0");
+      const zoneList = h("div", { class: "gz-list" });
       form.append(h("div", { class: "grp" },
-        h("h4", {}, "Zonen-Eigenschaften"),
+        h("h4", {}, "Gaszonen (", zoneCount, ")"), zoneList));
+
+      /* -- Zone per Koordinaten (Handy/Präzision) ----------------------- */
+      form.append(h("div", { class: "grp" },
+        h("h4", {}, "Zone per Koordinaten (Alternative zum Zeichnen)"),
         h("div", { class: "row" },
-          "Radius (m):", numInput("gz-radius", 150),
-          "Höhe oben:", numInput("gz-posheight", 20),
-          "Höhe unten:", numInput("gz-negheight", 3)),
-        h("div", { class: "row" },
-          "Partikel-Abstand:", numInput("gz-innerpart", 100),
-          "Außenversatz:", numInput("gz-outeroffset", 20)),
-        field("Gas-Partikel",
-          h("select", { id: "gz-particle" },
-            ...GAS_PARTICLES.map(([v, l]) => h("option", { value: v }, l))))));
-      this.pos = posList({});
+          "X:", numInput("gz-addx", ""), "Z:", numInput("gz-addz", ""),
+          "Radius:", numInput("gz-addr", 150),
+          h("button", { class: "small", onclick: () => addByCoords() }, "+ Zone"))));
+
+      /* -- SafePositions-Liste ------------------------------------------ */
+      const safeList = h("div", { class: "gz-list" });
       form.append(h("div", { class: "grp" },
-        h("h4", {}, "Position(en) der Gaszone(n)"),
-        h("p", { class: "hint" }, "Jede Position wird eine eigene Zone."),
-        this.pos));
-      this.safe = posList({ startEmpty: true });
-      form.append(h("div", { class: "grp" },
-        h("h4", {}, "Sichere Teleport-Punkte (SafePositions)"),
+        h("h4", {}, "SafePositions (Teleport-Ziele)"),
         h("p", { class: "hint" }, "Wohin Spieler versetzt werden, die mitten " +
-          "in einer Gaszone einloggen. Optional, aber empfohlen – sonst " +
-          "sterben sie beim Beitreten."),
-        this.safe));
+          "in einer Gaszone einloggen – sonst sterben sie beim Beitreten."),
+        safeList));
+
+      /* -- Konfig-Modal ------------------------------------------------- */
+      const mName = textInput("gzm-name", "");
+      const mRadius = numInput("gzm-radius", 150);
+      const mX = numInput("gzm-x", 0), mZ = numInput("gzm-z", 0);
+      const mPos = numInput("gzm-pos", 20), mNeg = numInput("gzm-neg", 3);
+      const mInner = numInput("gzm-inner", 100), mOuter = numInput("gzm-outer", 20);
+      const mPart = h("select", { id: "gzm-part" },
+        ...GAS_PARTICLES.map(([v, l]) => h("option", { value: v }, l)));
+      const modal = h("div", { class: "gz-modal-overlay hidden" },
+        h("div", { class: "gz-modal" },
+          h("h3", {}, "Gaszone konfigurieren"),
+          field("Name", mName),
+          h("div", { class: "row" }, "Radius (m):", mRadius, "X:", mX, "Z:", mZ),
+          h("div", { class: "row" }, "Höhe oben:", mPos, "Höhe unten:", mNeg),
+          h("div", { class: "row" }, "Partikel-Abstand:", mInner, "Außenversatz:", mOuter),
+          field("Partikel-Effekt", mPart),
+          h("div", { class: "btn-row" },
+            h("button", { class: "primary", onclick: () => saveModal() }, "Speichern"),
+            h("button", { onclick: () => closeModal() }, "Abbrechen"),
+            h("button", { class: "danger",
+              onclick: () => { if (gz.editing) removeZone(gz.editing); closeModal(); } },
+              "Zone löschen"))));
+      form.append(modal);
+
+      /* ---------------------------------------------------- Funktionen */
+      function updateSwitch() {
+        switchRow.querySelectorAll("button").forEach((b) =>
+          b.classList.toggle("active", b.dataset.mapkey === gz.mapKey));
+      }
+      function applyToggles() {
+        if (!gz.map) return;
+        const set = (grp, show) => {
+          if (!grp) return;
+          if (show && !gz.map.hasLayer(grp)) grp.addTo(gz.map);
+          else if (!show && gz.map.hasLayer(grp)) gz.map.removeLayer(grp);
+        };
+        set(gz.cityGroup, gz.showCities);
+        set(gz.drawGroup, gz.showZones);
+        set(gz.safeGroup, gz.showSafe);
+      }
+      function buildMap() {
+        const cfg = shared.MAPS[gz.mapKey];
+        const WORLD = cfg.size;
+        if (gz.map) { gz.map.remove(); gz.map = null; }
+        gz.map = L.map(mapEl, {
+          crs: shared.makeCrs(WORLD), minZoom: 1, maxZoom: 8,
+          maxBounds: [[-2000, -2000], [WORLD + 2000, WORLD + 2000]],
+          attributionControl: false,
+        });
+        L.tileLayer(shared.tileUrl(cfg.slug, "topographic"), {
+          noWrap: true, minNativeZoom: 0, maxNativeZoom: 8,
+          bounds: [[0, 0], [WORLD, WORLD]],
+        }).addTo(gz.map);
+        new shared.GridBackdrop({ noWrap: true, opacity: 0.35, world: WORLD }).addTo(gz.map);
+        gz.cityGroup = L.layerGroup();
+        gz.drawGroup = L.layerGroup();
+        gz.safeGroup = L.layerGroup();
+        shared.cities(gz.mapKey).forEach(([name, x, z]) =>
+          L.marker([z, x], { interactive: false, icon: L.divIcon({
+            className: "gz-city", html: name,
+            iconSize: [90, 14], iconAnchor: [45, 7] }) }).addTo(gz.cityGroup));
+        gz.map.on("mousemove", (e) => {
+          coordEl.textContent = "X " + Math.round(e.latlng.lng) + " | Z " + Math.round(e.latlng.lat);
+        });
+        gz.map.on("click", (e) => {
+          if (gz.safeMode || e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
+            addSafe(Math.round(e.latlng.lng), Math.round(e.latlng.lat));
+            if (gz.safeMode) { gz.safeMode = false; safeBtn.classList.remove("on"); }
+          }
+        });
+        /* Custom Kreis-Zeichnen */
+        let drawing = null;
+        gz.map.on("mousedown", (e) => {
+          if (!gz.drawMode) return;
+          const circle = L.circle(e.latlng, { radius: 1, color: "#ff6b35",
+            fillColor: "#ffe14d", fillOpacity: 0.3, weight: 2 }).addTo(gz.drawGroup);
+          drawing = { x: Math.round(e.latlng.lng), z: Math.round(e.latlng.lat),
+                      center: e.latlng, circle };
+        });
+        gz.map.on("mousemove", (e) => {
+          if (drawing) drawing.circle.setRadius(Math.max(1, gz.map.distance(drawing.center, e.latlng)));
+        });
+        gz.map.on("mouseup", (e) => {
+          if (!drawing) return;
+          const r = Math.round(gz.map.distance(drawing.center, e.latlng));
+          gz.drawGroup.removeLayer(drawing.circle);
+          const d = drawing; drawing = null;
+          toggleDraw(false);
+          if (r >= 5) addZone(d.x, d.z, r, true);
+        });
+        applyToggles();
+        [30, 150, 400].forEach((ms) => setTimeout(() => {
+          if (gz.map) gz.map.invalidateSize();
+        }, ms));
+        gz.map.setView([WORLD / 2, WORLD / 2], 2);
+      }
+      function switchMap(key) {
+        if (key === gz.mapKey) return;
+        if ((gz.zones.length || gz.safe.length) &&
+            !confirm("Kartenwechsel löscht die aktuellen Zonen und SafePositions. Fortfahren?"))
+          return;
+        gz.zones = []; gz.safe = []; gz.counter = 1;
+        gz.mapKey = key;
+        shared.setMap(key);
+        updateSwitch(); buildMap(); renderZones(); renderSafe();
+      }
+      function toggleDraw(force) {
+        gz.drawMode = force === undefined ? !gz.drawMode : force;
+        if (gz.drawMode) { gz.safeMode = false; safeBtn.classList.remove("on"); }
+        drawBtn.classList.toggle("on", gz.drawMode);
+        mapEl.classList.toggle("gz-drawing", gz.drawMode);
+        if (gz.map) gz.map.dragging[gz.drawMode ? "disable" : "enable"]();
+      }
+      function toggleSafe(force) {
+        gz.safeMode = force === undefined ? !gz.safeMode : force;
+        if (gz.safeMode) toggleDraw(false);
+        safeBtn.classList.toggle("on", gz.safeMode);
+      }
+      function drawZoneCircle(zone) {
+        if (zone.circle) gz.drawGroup.removeLayer(zone.circle);
+        const c = L.circle([zone.z, zone.x], { radius: zone.radius, color: "#ff6b35",
+          fillColor: "#ffe14d", fillOpacity: 0.28, weight: 2 });
+        c.on("click", (e) => { L.DomEvent.stop(e); openModal(zone); });
+        c.bindTooltip(zone.name);
+        c.addTo(gz.drawGroup);
+        zone.circle = c;
+      }
+      function addZone(x, z, radius, openCfg) {
+        const zone = { id: gz.counter++, name: "GasZone" + (gz.zones.length + 1),
+          x, z, radius, posHeight: gz.defaults.posHeight, negHeight: gz.defaults.negHeight,
+          innerPartDist: gz.defaults.innerPartDist, outerOffset: gz.defaults.outerOffset,
+          particle: gz.defaults.particle, circle: null };
+        gz.zones.push(zone);
+        drawZoneCircle(zone);
+        renderZones();
+        if (openCfg) openModal(zone);
+      }
+      function removeZone(zone) {
+        if (zone.circle) gz.drawGroup.removeLayer(zone.circle);
+        gz.zones = gz.zones.filter((z) => z !== zone);
+        renderZones();
+      }
+      function renderZones() {
+        zoneList.innerHTML = "";
+        if (!gz.zones.length)
+          zoneList.append(h("p", { class: "hint" },
+            "Noch keine Zonen. Kreis auf der Karte ziehen oder per Koordinaten anlegen."));
+        gz.zones.forEach((zone) => zoneList.append(h("div", { class: "gz-row" },
+          h("span", { class: "nm" }, zone.name),
+          h("span", { class: "co" }, zone.x + ", " + zone.z),
+          h("span", { class: "co" }, zone.radius + " m"),
+          h("button", { class: "small", onclick: () => openModal(zone) }, "Konfigurieren"),
+          h("button", { class: "small danger", onclick: () => removeZone(zone) }, "✕"))));
+        zoneCount.textContent = String(gz.zones.length);
+      }
+      function openModal(zone) {
+        gz.editing = zone;
+        mName.value = zone.name; mRadius.value = zone.radius;
+        mX.value = zone.x; mZ.value = zone.z;
+        mPos.value = zone.posHeight; mNeg.value = zone.negHeight;
+        mInner.value = zone.innerPartDist; mOuter.value = zone.outerOffset;
+        mPart.value = zone.particle;
+        modal.classList.remove("hidden");
+      }
+      function closeModal() { modal.classList.add("hidden"); gz.editing = null; }
+      function saveModal() {
+        const z = gz.editing; if (!z) return;
+        z.name = mName.value.trim() || z.name;
+        z.radius = num(mRadius.value, z.radius);
+        z.x = Math.round(num(mX.value, z.x)); z.z = Math.round(num(mZ.value, z.z));
+        z.posHeight = num(mPos.value, z.posHeight);
+        z.negHeight = num(mNeg.value, z.negHeight);
+        z.innerPartDist = num(mInner.value, z.innerPartDist);
+        z.outerOffset = num(mOuter.value, z.outerOffset);
+        z.particle = mPart.value; gz.defaults.particle = z.particle;
+        drawZoneCircle(z); renderZones(); closeModal();
+        toast("Gaszone gespeichert.");
+      }
+      function addSafe(x, z) {
+        const sp = { x, z, marker: null };
+        const m = L.circleMarker([z, x], { radius: 6, color: "#00aa00",
+          fillColor: "#00ff5a", weight: 2, opacity: 1, fillOpacity: 0.75 });
+        m.bindTooltip("SafePos " + x + ", " + z);
+        m.on("click", (e) => { L.DomEvent.stop(e); removeSafe(sp); });
+        m.addTo(gz.safeGroup);
+        sp.marker = m; gz.safe.push(sp); renderSafe();
+      }
+      function removeSafe(sp) {
+        if (sp.marker) gz.safeGroup.removeLayer(sp.marker);
+        gz.safe = gz.safe.filter((s) => s !== sp); renderSafe();
+      }
+      function renderSafe() {
+        safeList.innerHTML = "";
+        if (!gz.safe.length)
+          safeList.append(h("p", { class: "hint" },
+            "Keine SafePositions. Ctrl+Klick auf die Karte oder „＋ SafePosition“."));
+        gz.safe.forEach((sp, i) => safeList.append(h("div", { class: "gz-row" },
+          h("span", { class: "nm" }, "Pos " + (i + 1)),
+          h("span", { class: "co" }, sp.x + ", " + sp.z),
+          h("button", { class: "small danger", onclick: () => removeSafe(sp) }, "✕"))));
+      }
+      function clearZones() {
+        if (!gz.zones.length) return;
+        if (!confirm("Alle Gaszonen löschen?")) return;
+        gz.zones.forEach((z) => z.circle && gz.drawGroup.removeLayer(z.circle));
+        gz.zones = []; gz.counter = 1; renderZones();
+      }
+      function clearSafe() {
+        if (!gz.safe.length) return;
+        if (!confirm("Alle SafePositions löschen?")) return;
+        gz.safe.forEach((s) => s.marker && gz.safeGroup.removeLayer(s.marker));
+        gz.safe = []; renderSafe();
+      }
+      function addByCoords() {
+        const x = num($("#gz-addx").value, NaN), z = num($("#gz-addz").value, NaN);
+        const r = num($("#gz-addr").value, 150);
+        if (!Number.isFinite(x) || !Number.isFinite(z))
+          return toast("Bitte X und Z angeben.", "warn");
+        addZone(Math.round(x), Math.round(z), Math.round(r), true);
+        if (gz.map) gz.map.setView([z, x], 4);
+      }
+      function downloadJson() {
+        if (!gz.zones.length) return toast("Keine Zonen zum Exportieren.", "warn");
+        const data = { Areas: gasAreasFromZones(gz.zones),
+                       SafePositions: gz.safe.map((s) => [s.x, s.z]) };
+        const a = h("a", { download: "cfgEffectArea.json",
+          href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 4)],
+            { type: "application/json" })) });
+        a.click(); URL.revokeObjectURL(a.href);
+      }
+
+      updateSwitch(); buildMap(); renderZones(); renderSafe();
     },
+
     async generate() {
-      const name = $("#gz-name").value.trim() || "MeineGasZone";
-      const radius = num($("#gz-radius").value, 150);
-      const posHeight = num($("#gz-posheight").value, 20);
-      const negHeight = num($("#gz-negheight").value, 3);
-      const innerPartDist = num($("#gz-innerpart").value, 100);
-      const outerOffset = num($("#gz-outeroffset").value, 20);
-      const particle = $("#gz-particle").value;
-      const positions = this.pos.values();
-      if (!positions.length) throw new Error("Bitte mindestens eine Zonen-Position angeben.");
-      const safe = this.safe.values();
-      const areas = positions.map((p, idx) => ({
-        AreaName: positions.length > 1 ? name + "_" + (idx + 1) : name,
-        Type: "ContaminatedArea_Static",
-        TriggerType: "ContaminatedTrigger",
-        Data: {
-          Pos: [p.x, 0, p.z], Radius: radius,
-          PosHeight: posHeight, NegHeight: negHeight,
-          InnerPartDist: innerPartDist, OuterOffset: outerOffset,
-          ParticleName: particle,
-        },
-        PlayerData: {
-          AroundPartName: "graphics/particles/contaminated_area_gas_around",
-          TinyPartName: "graphics/particles/contaminated_area_gas_around_tiny",
-          PPERequesterType: "PPERequester_ContaminatedAreaTint",
-        },
-      }));
-      const summary = areas.map((a) =>
-        "Gaszone „" + a.AreaName + "“ bei X " + a.Data.Pos[0] + " / Z " +
-        a.Data.Pos[2] + ", Radius " + radius + " m.");
-      if (safe.length) summary.push(safe.length + " sichere Teleport-Punkt(e).");
+      const gz = this.gz;
+      if (!gz || !gz.zones.length) throw new Error("Bitte mindestens eine Gaszone anlegen.");
+      const areas = gasAreasFromZones(gz.zones);
+      const safe = gz.safe.map((s) => [s.x, s.z]);
+      const summary = areas.map((a) => "Gaszone „" + a.AreaName + "“ bei X " +
+        a.Data.Pos[0] + " / Z " + a.Data.Pos[2] + ", Radius " + a.Data.Radius + " m.");
+      if (safe.length) summary.push(safe.length + " SafePosition(en).");
       return [{
-        path: await missionPath("cfgEffectArea.json"),
+        path: mission("cfgEffectArea.json"),
         summary,
         transform: (current) => {
-          const data = current ? JSON.parse(current)
-                               : { Areas: [], SafePositions: [] };
+          const data = current ? JSON.parse(current) : { Areas: [], SafePositions: [] };
           if (!Array.isArray(data.Areas)) data.Areas = [];
-          const newNames = new Set(areas.map((a) => a.AreaName));
-          data.Areas = data.Areas.filter((a) => !newNames.has(a.AreaName));
+          const names = new Set(areas.map((a) => a.AreaName));
+          data.Areas = data.Areas.filter((a) => !names.has(a.AreaName));
           data.Areas.push(...areas);
           if (!Array.isArray(data.SafePositions)) data.SafePositions = [];
-          if (safe.length) data.SafePositions = safe.map((s) => [s.x, s.z]);
+          if (safe.length) data.SafePositions = safe;
           return JSON.stringify(data, null, 4) + "\n";
         },
       }];
@@ -1407,18 +1603,8 @@ ${kids}
 
   registry.push({
     id: "horde", icon: "🧟", title: "Zombie-Horden Generator",
-    desc: "Feste Zombie-Horden an Wunschpositionen – neu anlegen oder vorhandene bearbeiten. Zombie-Typen bequem per Liste auswählen, Bewegungsverhalten und Zonen-Radius einstellbar.",
-    async render(form) {
-      this._evDoc = await readXmlOrNull(mission("db/events.xml"));
-      this._spDoc = await readXmlOrNull(await missionPath("cfgeventspawns.xml"));
-      const hordes = [];
-      if (this._evDoc) this._evDoc.querySelectorAll("events > event").forEach((ev) => {
-        const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
-        if (kids.length && kids.every((c) => (c.getAttribute("type") || "").startsWith("Zmb")))
-          hordes.push(ev.getAttribute("name"));
-      });
-      form.append(loadPicker("– Neue Horde erstellen –", hordes,
-        (name) => this.fillFrom(name)));
+    desc: "Feste Zombie-Horden an Wunschpositionen – Zombie-Typen bequem per Liste auswählen, Bewegungsverhalten und Zonen-Radius einstellbar.",
+    render(form) {
       form.append(field("Name der Horde", textInput("hd-name", "InfectedHorde")));
       this.zombies = zombiePicker();
       this.zombies.add("ZmbM_SoldierNormal", 5);
@@ -1438,44 +1624,6 @@ ${kids}
         field("Loot pro Zombie (min/max)",
           h("span", { class: "row" }, numInput("hd-lootmin", 0), numInput("hd-lootmax", 0))),
         field("Cleanupradius", numInput("hd-cleanup", 400))));
-    },
-    fillFrom(name) {
-      if (!name || !this._evDoc) return;
-      const ev = this._evDoc.querySelector(`event[name="${name}"]`);
-      if (!ev) return;
-      const get = (f, dflt) => {
-        const el = ev.querySelector(":scope > " + f);
-        return el ? el.textContent.trim() : dflt;
-      };
-      $("#hd-name").value = name;
-      $("#hd-lifetime").value = get("lifetime", 300);
-      $("#hd-cleanup").value = get("cleanupradius", 400);
-      const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
-      this.zombies.setValues(kids.map((c) => ({
-        item: c.getAttribute("type"),
-        num: Number(c.getAttribute("max")) || 1,
-      })));
-      if (kids[0]) {
-        $("#hd-lootmin").value = kids[0].getAttribute("lootmin") || 0;
-        $("#hd-lootmax").value = kids[0].getAttribute("lootmax") || 0;
-      }
-      if (this._spDoc) {
-        const zones = Array.from(this._spDoc.querySelectorAll(`event[name="${name}"] > zone`));
-        if (zones.length) {
-          const z0 = zones[0];
-          $("#hd-radius").value = Number(z0.getAttribute("r")) || 25;
-          const smin = Number(z0.getAttribute("smin")) || 0;
-          const smax = Number(z0.getAttribute("smax")) || 0;
-          const style = Object.entries(HORDE_MOVEMENT).find(
-            ([, m]) => m.smin === smin && m.smax === smax);
-          $("#hd-move").value = style ? style[0] : "stationary";
-        }
-        this.pos.setValues(zones.map((z) => ({
-          x: Number(z.getAttribute("x")) || 0,
-          z: Number(z.getAttribute("z")) || 0,
-        })));
-      }
-      toast("Horde „" + name + "“ geladen – anpassen und Vorschau öffnen.");
     },
     async generate() {
       const name = $("#hd-name").value.trim() || "InfectedHorde";
@@ -1514,7 +1662,7 @@ ${kids}
           },
         },
         {
-          path: await missionPath("cfgeventspawns.xml"),
+          path: mission("cfgeventspawns.xml"),
           summary: [count + " Horden-Zone(n), Radius " + radius + " m: " +
                     positions.map((p) => "X " + p.x + "/Z " + p.z).join(", ") + "."],
           transform: (current) => {
@@ -1552,31 +1700,18 @@ ${kids}
         h("p", { class: "hint" }, "Werden zu den vorhandenen Vanilla-Positionen hinzugefügt."),
         this.pos));
       // Aktuelle Werte aus events.xml vorbelegen
-      const evDoc = await readXmlOrNull(mission("db/events.xml"));
-      const ev = evDoc && evDoc.querySelector('event[name="StaticHeliCrash"]');
-      if (ev) {
-        for (const f of ["nominal", "min", "max"]) {
-          const el = ev.querySelector(":scope > " + f);
-          if (el) $("#hl-" + f).value = el.textContent.trim();
+      try {
+        const text = await readOrNull(mission("db/events.xml"));
+        if (text) {
+          const ev = parseXml(text).querySelector('event[name="StaticHeliCrash"]');
+          if (ev) {
+            for (const f of ["nominal", "min", "max"]) {
+              const el = ev.querySelector(":scope > " + f);
+              if (el) $("#hl-" + f).value = el.textContent.trim();
+            }
+          }
         }
-      }
-      // Aktuellen Wreck-Loot aus cfgspawnabletypes.xml zum Bearbeiten laden
-      const stDoc = await readXmlOrNull(await missionPath("cfgspawnabletypes.xml"));
-      const node = stDoc && stDoc.querySelector('type[name="Wreck_UH1Y"]');
-      if (node) {
-        const rows = Array.from(node.querySelectorAll(":scope > attachments, :scope > cargo"))
-          .map((b) => {
-            const item = b.querySelector("item");
-            return [item ? item.getAttribute("name") : "",
-                    Math.round((Number(b.getAttribute("chance")) || 0) * 100)];
-          }).filter(([i]) => i);
-        if (rows.length) {
-          const fresh = itemList({ numLabel: "Chance %", numDefault: 30, step: "1",
-                                   initial: rows });
-          this.loot.replaceWith(fresh);
-          this.loot = fresh;
-        }
-      }
+      } catch (err) { /* Vorbelegung optional */ }
     },
     async generate() {
       const loot = this.loot.values();
@@ -1589,7 +1724,7 @@ ${kids}
       const positions = this.pos.values();
       const plans = [
         {
-          path: await missionPath("cfgspawnabletypes.xml"),
+          path: mission("cfgspawnabletypes.xml"),
           summary: ["Heli-Crash-Loot: " + loot.map((l) => l.item + " (" + l.num + " %)").join(", ")],
           transform: (current) => {
             const base = current ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<spawnabletypes>\n</spawnabletypes>\n';
@@ -1608,7 +1743,7 @@ ${kids}
       ];
       if (positions.length) {
         plans.push({
-          path: await missionPath("cfgeventspawns.xml"),
+          path: mission("cfgeventspawns.xml"),
           summary: [positions.length + " zusätzliche Absturzposition(en)."],
           transform: (current) => {
             if (current === null) throw new Error("cfgeventspawns.xml wurde auf dem Server nicht gefunden.");
@@ -1655,40 +1790,19 @@ ${kids}
 
   registry.push({
     id: "vehicle", icon: "🚗", title: "Fahrzeug-Builder",
-    desc: "Fahrzeuge an Wunschpositionen spawnen – neue Fahrzeug-Events anlegen oder vorhandene laden und bearbeiten. Auf Wunsch komplett fahrbereit mit allen Teilen.",
-    async render(form) {
-      this._evDoc = await readXmlOrNull(mission("db/events.xml"));
-      this._spDoc = await readXmlOrNull(await missionPath("cfgeventspawns.xml"));
-      this._stDoc = await readXmlOrNull(await missionPath("cfgspawnabletypes.xml"));
-      this._nameTouched = false;
-      const vehEvents = [];
-      if (this._evDoc) this._evDoc.querySelectorAll("events > event").forEach((ev) => {
-        const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
-        if (kids.some((c) => VEHICLES[c.getAttribute("type")]))
-          vehEvents.push(ev.getAttribute("name"));
-      });
-      form.append(loadPicker("– Neues Fahrzeug-Event erstellen –", vehEvents,
-        (name) => this.fillFrom(name)));
+    desc: "Fahrzeuge an Wunschpositionen spawnen – auf Wunsch komplett fahrbereit mit allen Teilen.",
+    render(form) {
       const sel = h("select", { id: "vh-type" });
       for (const [type, info] of Object.entries(VEHICLES))
         sel.append(h("option", { value: type }, info.label + " – " + type));
       form.append(field("Fahrzeug", sel));
-      const autoName = () => "Vehicle" + sel.value.replace(/_/g, "");
-      const nameInput = textInput("vh-name", autoName());
-      nameInput.addEventListener("input", () => { this._nameTouched = true; });
-      form.append(field("Event-Name (db/events.xml)", nameInput));
-      form.append(h("p", { class: "hint" },
-        "Gleicher Name = vorhandenes Event wird bearbeitet, " +
-        "neuer Name = neues Event wird angelegt."));
       form.append(h("div", { class: "row" },
         "nominal:", numInput("vh-nominal", 3),
         "min:", numInput("vh-min", 2), "max:", numInput("vh-max", 4)));
       this.pos = posList({ angle: true });
       form.append(h("div", { class: "grp" },
         h("h4", {}, "Spawnpositionen"),
-        field("Positions-Modus", h("select", { id: "vh-posmode" },
-          h("option", { value: "replace" }, "Vorhandene Positionen ersetzen"),
-          h("option", { value: "append" }, "Zu vorhandenen Positionen hinzufügen"))),
+        h("p", { class: "hint" }, "Ersetzt die bisherigen Positionen dieses Fahrzeug-Events."),
         this.pos));
       const fit = h("div", { class: "grp" },
         h("h4", {}, h("label", {},
@@ -1703,61 +1817,12 @@ ${kids}
         this.parts.replaceWith(fresh);
         this.parts = fresh;
       };
-      sel.addEventListener("change", () => {
-        if (!this._nameTouched) nameInput.value = autoName();
-        fillParts();
-      });
+      sel.addEventListener("change", fillParts);
       fillParts();
-    },
-    fillFrom(name) {
-      if (!name || !this._evDoc) return;
-      const ev = this._evDoc.querySelector(`event[name="${name}"]`);
-      if (!ev) return;
-      const get = (f, dflt) => {
-        const el = ev.querySelector(":scope > " + f);
-        return el ? el.textContent.trim() : dflt;
-      };
-      const kids = Array.from(ev.querySelectorAll(":scope > children > child"));
-      const child = kids.find((c) => VEHICLES[c.getAttribute("type")]);
-      const type = child ? child.getAttribute("type") : "";
-      if (type) $("#vh-type").value = type;
-      $("#vh-name").value = name;
-      this._nameTouched = true;   // geladener Name bleibt beim Fahrzeugwechsel stehen
-      $("#vh-nominal").value = get("nominal", 3);
-      $("#vh-min").value = get("min", 2);
-      $("#vh-max").value = get("max", 4);
-      // Verbaute Teile aus cfgspawnabletypes.xml übernehmen
-      const typeNode = type && this._stDoc &&
-        this._stDoc.querySelector(`type[name="${type}"]`);
-      $("#vh-fit").checked = !!typeNode;
-      if (typeNode) {
-        const counts = new Map();
-        typeNode.querySelectorAll(":scope > attachments > item, :scope > cargo > item")
-          .forEach((it) => {
-            const n = it.getAttribute("name");
-            if (n) counts.set(n, (counts.get(n) || 0) + 1);
-          });
-        const fresh = itemList({ numLabel: "Anzahl", numDefault: 1,
-                                 initial: Array.from(counts) });
-        this.parts.replaceWith(fresh);
-        this.parts = fresh;
-      }
-      // Vorhandene Positionen aus cfgeventspawns.xml laden
-      if (this._spDoc) {
-        this.pos.setValues(Array.from(
-          this._spDoc.querySelectorAll(`event[name="${name}"] > pos`)).map((p) => ({
-            x: Number(p.getAttribute("x")) || 0,
-            z: Number(p.getAttribute("z")) || 0,
-            a: Number(p.getAttribute("a")) || 0,
-          })));
-      }
-      toast("Event „" + name + "“ geladen – anpassen und Vorschau öffnen.");
     },
     async generate() {
       const type = $("#vh-type").value;
-      const eventName = $("#vh-name").value.trim() ||
-        ("Vehicle" + type.replace(/_/g, ""));
-      const posMode = $("#vh-posmode").value;
+      const eventName = "Vehicle" + type.replace(/_/g, "");
       const positions = this.pos.values();
       if (!positions.length) throw new Error("Bitte mindestens eine Position angeben.");
       const nominal = num($("#vh-nominal").value, 3);
@@ -1782,13 +1847,11 @@ ${kids}
           },
         },
         {
-          path: await missionPath("cfgeventspawns.xml"),
-          summary: [positions.length + " Spawnposition(en) für " + eventName +
-                    (posMode === "append" ? " (zusätzlich zu vorhandenen)."
-                                          : " (ersetzt vorhandene).")],
+          path: mission("cfgeventspawns.xml"),
+          summary: [positions.length + " Spawnposition(en) für " + eventName + "."],
           transform: (current) => {
             if (current === null) throw new Error("cfgeventspawns.xml wurde auf dem Server nicht gefunden.");
-            return upsertEventspawns(current, eventName, positions, posMode).text;
+            return upsertEventspawns(current, eventName, positions, "replace").text;
           },
         },
       ];
@@ -1800,7 +1863,7 @@ ${kids}
         }
         if (rows.length) {
           plans.push({
-            path: await missionPath("cfgspawnabletypes.xml"),
+            path: mission("cfgspawnabletypes.xml"),
             summary: [type + " spawnt fahrbereit mit: " +
                       this.parts.values().map((p) => p.num + "× " + p.item).join(", ")],
             transform: (current) => {
@@ -1818,35 +1881,8 @@ ${kids}
 
   registry.push({
     id: "spawnable", icon: "🎒", title: "Inhalte & Aufsätze",
-    desc: "Bestimmen, womit ein Item spawnt: Waffen mit Aufsätzen, Rucksäcke mit Inhalt, Zombies mit Loot in den Taschen – neu anlegen oder vorhandene Einträge bearbeiten. (cfgspawnabletypes.xml)",
-    async render(form) {
-      this._doc = await readXmlOrNull(await missionPath("cfgspawnabletypes.xml"));
-      const names = this._doc
-        ? Array.from(this._doc.querySelectorAll("spawnabletypes > type"))
-            .map((t) => t.getAttribute("name")).filter(Boolean)
-        : [];
-      form.append(loadPicker("– Neuen Eintrag erstellen –", names, (name) => {
-        const node = this._doc && this._doc.querySelector(`type[name="${name}"]`);
-        if (!node) return;
-        $("#sp-target").value = name;
-        const collect = (kind) =>
-          Array.from(node.querySelectorAll(":scope > " + kind)).map((b) => {
-            const item = b.querySelector("item");
-            return [item ? item.getAttribute("name") : "",
-                    Math.round((Number(b.getAttribute("chance")) || 0) * 100)];
-          }).filter(([i]) => i);
-        const attRows = collect("attachments");
-        const cargoRows = collect("cargo");
-        const freshAtt = itemList({ numLabel: "Chance %", numDefault: 100,
-          initial: attRows.length ? attRows : [["", undefined]] });
-        this.att.replaceWith(freshAtt);
-        this.att = freshAtt;
-        const freshCargo = itemList({ numLabel: "Chance %", numDefault: 100,
-          initial: cargoRows.length ? cargoRows : [["", undefined]] });
-        this.cargo.replaceWith(freshCargo);
-        this.cargo = freshCargo;
-        toast("Eintrag „" + name + "“ geladen – anpassen und Vorschau öffnen.");
-      }));
+    desc: "Bestimmen, womit ein Item spawnt: Waffen mit Aufsätzen, Rucksäcke mit Inhalt, Zombies mit Loot in den Taschen. (cfgspawnabletypes.xml)",
+    render(form) {
       form.append(field("Ziel (Waffe / Tasche / Zombie / Container)",
         textInput("sp-target", "", "z.B. AKM, ZmbM_SoldierNormal…", "dl-items")));
       const att = h("div", { class: "grp" }, h("h4", {}, "Aufsätze / Anbauteile (attachments)"));
@@ -1874,7 +1910,7 @@ ${kids}
       ];
       if (!rows.length) throw new Error("Bitte mindestens einen Aufsatz oder Inhalt angeben.");
       return [{
-        path: await missionPath("cfgspawnabletypes.xml"),
+        path: mission("cfgspawnabletypes.xml"),
         summary: ["„" + target + "“ spawnt mit: " + rows.map((r) =>
           r.item + " (" + Math.round(r.chance * 100) + " %, " +
           (r.kind === "cargo" ? "Inhalt" : "Aufsatz") + ")").join(", ")],
@@ -1931,15 +1967,17 @@ ${kids}
         h("h4", {}, "Feste Positionen (optional, ersetzt vorhandene)"), this.pos));
 
       // Vorhandene Events zum Laden anbieten
-      this._eventsDoc = await readXmlOrNull(mission("db/events.xml"));
-      this._spawnsDoc = await readXmlOrNull(await missionPath("cfgeventspawns.xml"));
-      if (this._eventsDoc) {
-        this._eventsDoc.querySelectorAll("events > event").forEach((ev) => {
-          loadSel.append(h("option", { value: ev.getAttribute("name") },
-            ev.getAttribute("name")));
-        });
-        loadSel.addEventListener("change", () => this.fillFrom(loadSel.value));
-      }
+      try {
+        const text = await readOrNull(mission("db/events.xml"));
+        if (text) {
+          this._eventsDoc = parseXml(text);
+          this._eventsDoc.querySelectorAll("events > event").forEach((ev) => {
+            loadSel.append(h("option", { value: ev.getAttribute("name") },
+              ev.getAttribute("name")));
+          });
+          loadSel.addEventListener("change", () => this.fillFrom(loadSel.value));
+        }
+      } catch (err) { /* optional */ }
     },
     fillFrom(name) {
       if (!name || !this._eventsDoc) return;
@@ -1973,15 +2011,6 @@ ${kids}
           (c) => [c.getAttribute("type"), Number(c.getAttribute("max")) || 1]) });
       this.children.replaceWith(fresh);
       this.children = fresh;
-      // Vorhandene Positionen aus cfgeventspawns.xml übernehmen
-      if (this._spawnsDoc) {
-        this.pos.setValues(Array.from(
-          this._spawnsDoc.querySelectorAll(`event[name="${name}"] > pos`)).map((p) => ({
-            x: Number(p.getAttribute("x")) || 0,
-            z: Number(p.getAttribute("z")) || 0,
-            a: Number(p.getAttribute("a")) || 0,
-          })));
-      }
       toast("Event „" + name + "“ geladen – Werte anpassen und Vorschau öffnen.");
     },
     async generate() {
@@ -2022,7 +2051,7 @@ ${kids}
       }];
       if (positions.length) {
         plans.push({
-          path: await missionPath("cfgeventspawns.xml"),
+          path: mission("cfgeventspawns.xml"),
           summary: [positions.length + " feste Position(en) für „" + name + "“."],
           transform: (current) => {
             if (current === null) throw new Error("cfgeventspawns.xml wurde auf dem Server nicht gefunden.");
@@ -2037,28 +2066,6 @@ ${kids}
   /* ======================================================== UI-Aufbau */
 
   let initialized = false;
-
-  /* Nach einem Kartenwechsel hängen alle Daten am neuen Missionsordner:
-     Caches leeren, Vormerkungen verwerfen, offenes Formular schließen. */
-  function onMissionChanged() {
-    itemCache = null;
-    missionFiles = null;
-    ["dl-items", "dl-zmb"].forEach((id) => {
-      const el = document.getElementById(id);
-      if (el) el.remove();
-    });
-    if (staged.length) {
-      staged.length = 0;
-      updateStagingBar();
-      toast("Vorgemerkte Änderungen verworfen – sie gehörten zur vorherigen Karte.", "warn");
-    }
-    if (initialized && currentTool) {
-      $("#tool-panel").classList.add("hidden");
-      $("#tools-home").classList.remove("hidden");
-      currentTool = null;
-    }
-    if (initialized) ensureDatalists();
-  }
 
   function init() {
     if (initialized) return;
@@ -2113,10 +2120,9 @@ ${kids}
     }
   }
 
-  return { init, registry, onMissionChanged,
-           _test: { upsertEvent, upsertEventspawns,
-                    upsertSpawnableType, updateEventCounts,
-                    lineDiff } };
+  return { init, registry, _test: { upsertEvent, upsertEventspawns,
+                                    upsertSpawnableType, updateEventCounts,
+                                    lineDiff } };
 })();
 
 window.Tools = Tools;

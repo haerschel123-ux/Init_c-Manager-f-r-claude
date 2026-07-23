@@ -49,17 +49,6 @@ header {
   font-size: 15px;
 }
 #tabs button:hover { color: var(--text); background: var(--bg3); }
-#tabs .tab-link {
-  border: 1px solid transparent;
-  color: var(--muted);
-  padding: 8px 14px;
-  border-radius: 8px;
-  font-size: 15px;
-  text-decoration: none;
-  white-space: nowrap;
-  align-self: center;
-}
-#tabs .tab-link:hover { color: var(--text); background: var(--bg3); }
 #tabs button.active { color: var(--text); background: var(--bg3); border-color: var(--border); }
 .header-right { display: flex; align-items: center; gap: 10px; }
 .pill {
@@ -368,6 +357,48 @@ button.small.danger { color: var(--warn); border-color: var(--warn); }
   .lo-grid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
   .lo-chars { grid-template-columns: 1fr 1fr; }
 }
+
+/* ---------------------------------------------- Gas-Zonen-Generator */
+.gz-toggles label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 14px; }
+.gz-toggles input { width: auto; }
+.gz-tools button { flex: 0 0 auto; }
+button.small.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.gz-mapwrap { position: relative; margin: 8px 0; }
+.gz-map {
+  width: 100%; height: 480px; border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; background: #2a3540;
+}
+.gz-map.gz-drawing { cursor: crosshair; }
+.gz-coord {
+  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+  background: rgba(20, 24, 29, .85); color: var(--text); padding: 4px 12px;
+  border-radius: 6px; font-family: monospace; font-size: 13px; font-weight: 600;
+  z-index: 500; pointer-events: none; border: 1px solid var(--border);
+}
+.gz-city {
+  color: #fff; font-size: 11px; font-weight: 600; white-space: nowrap;
+  text-transform: uppercase; letter-spacing: .5px; pointer-events: none;
+  text-shadow: -1px -1px 2px #000, 1px -1px 2px #000, -1px 1px 2px #000, 1px 1px 2px #000;
+}
+.gz-list { display: flex; flex-direction: column; gap: 4px; }
+.gz-row {
+  display: flex; align-items: center; gap: 8px; padding: 5px 9px;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--bg2);
+}
+.gz-row .nm { font-weight: 600; flex: 1 1 auto; }
+.gz-row .co { color: var(--muted); font-family: monospace; font-size: 13px; flex: 0 0 auto; }
+.gz-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center; z-index: 4000; padding: 16px;
+}
+.gz-modal {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px 20px; max-width: 480px; width: 100%; max-height: 90vh; overflow: auto;
+}
+.gz-modal h3 { margin: 0 0 12px; }
+.gz-modal .row { margin: 8px 0; align-items: center; }
+.gz-modal input[type="number"] { width: 90px; }
+@media (max-width: 640px) { .gz-map { height: 360px; } }
 
 #staging-bar {
   flex: 0 0 auto;
