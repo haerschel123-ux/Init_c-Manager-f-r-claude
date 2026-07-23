@@ -1404,15 +1404,18 @@ ${kids}
         gz.map.on("mousemove", (e) => {
           coordEl.textContent = "X " + Math.round(e.latlng.lng) + " | Z " + Math.round(e.latlng.lat);
         });
-        /* Ctrl-/Cmd-Klick auf die Karte = SafePosition (Desktop-Komfort). */
+        /* SafePosition = einfacher Klick/Tipp auf die Karte. Leaflets
+           click-Event feuert auch bei Touch-Tap (aus dem DOM-click abgeleitet),
+           darum laeuft SafePosition hierueber — nicht ueber Pointer-Events. */
         gz.map.on("click", (e) => {
-          if (e.originalEvent.ctrlKey || e.originalEvent.metaKey)
+          if (gz.safeMode || e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
             addSafe(Math.round(e.latlng.lng), Math.round(e.latlng.lat));
+            if (gz.safeMode) toggleSafe(false);
+          }
         });
-        /* Kreis-Zeichnen & SafePosition-Tippen — Pointer-Events (funktioniert
-           mit Maus UND Touch/Handy; Leaflet-Map-Events feuern auf Touch nicht).
-           Einmalig an den (stabilen) Karten-Container gebunden; liest gz.map
-           dynamisch. */
+        /* Kreis-Zeichnen ist eine Ziehen-Geste — die braucht Pointer-Events,
+           weil Leaflets Maus-Events auf Touch nicht feuern. Einmalig an den
+           (stabilen) Karten-Container gebunden; liest gz.map dynamisch. */
         if (!gz._drawBound) {
           gz._drawBound = true;
           const toLL = (ev) => {
@@ -1421,41 +1424,23 @@ ${kids}
               L.point(ev.clientX - r.left, ev.clientY - r.top));
           };
           const finish = (ev) => {
-            if (gz._drawing) {
-              const d = gz._drawing; gz._drawing = null;
-              ev.preventDefault();
-              const r = Math.round(gz.map.distance(d.center, toLL(ev)));
-              gz.drawGroup.removeLayer(d.circle);
-              try { mapEl.releasePointerCapture(ev.pointerId); } catch (_) {}
-              if (r >= 5) { toggleDraw(false); addZone(d.x, d.z, r, true); }
-              return;
-            }
-            if (gz._safeDown) {
-              const s = gz._safeDown; gz._safeDown = null;
-              ev.preventDefault();
-              try { mapEl.releasePointerCapture(ev.pointerId); } catch (_) {}
-              if (Math.hypot(ev.clientX - s.sx, ev.clientY - s.sy) < 14) {
-                const ll = toLL(ev);
-                addSafe(Math.round(ll.lng), Math.round(ll.lat));
-                toggleSafe(false);
-              }
-            }
+            const d = gz._drawing; if (!d) return;
+            gz._drawing = null;
+            ev.preventDefault();
+            const r = Math.round(gz.map.distance(d.center, toLL(ev)));
+            gz.drawGroup.removeLayer(d.circle);
+            try { mapEl.releasePointerCapture(ev.pointerId); } catch (_) {}
+            if (r >= 5) { toggleDraw(false); addZone(d.x, d.z, r, true); }
           };
           mapEl.addEventListener("pointerdown", (ev) => {
-            if (!gz.map || (ev.button && ev.button !== 0)) return;
-            if (gz.drawMode) {
-              ev.preventDefault();
-              const ll = toLL(ev);
-              const circle = L.circle(ll, { radius: 1, color: "#ff6b35",
-                fillColor: "#ffe14d", fillOpacity: 0.3, weight: 2 }).addTo(gz.drawGroup);
-              gz._drawing = { x: Math.round(ll.lng), z: Math.round(ll.lat),
-                              center: ll, circle };
-              try { mapEl.setPointerCapture(ev.pointerId); } catch (_) {}
-            } else if (gz.safeMode) {
-              ev.preventDefault();
-              gz._safeDown = { sx: ev.clientX, sy: ev.clientY };
-              try { mapEl.setPointerCapture(ev.pointerId); } catch (_) {}
-            }
+            if (!gz.map || !gz.drawMode || (ev.button && ev.button !== 0)) return;
+            ev.preventDefault();
+            const ll = toLL(ev);
+            const circle = L.circle(ll, { radius: 1, color: "#ff6b35",
+              fillColor: "#ffe14d", fillOpacity: 0.3, weight: 2 }).addTo(gz.drawGroup);
+            gz._drawing = { x: Math.round(ll.lng), z: Math.round(ll.lat),
+                            center: ll, circle };
+            try { mapEl.setPointerCapture(ev.pointerId); } catch (_) {}
           });
           mapEl.addEventListener("pointermove", (ev) => {
             if (!gz.map) return;
@@ -1486,6 +1471,8 @@ ${kids}
         shared.setMap(key);
         updateSwitch(); buildMap(); renderZones(); renderSafe();
       }
+      /* Nur beim Zeichnen die Karte sperren (Ziehen-Geste); beim
+         SafePosition-Setzen bleibt die Karte normal bedienbar (Tipp = Klick). */
       function toggleDraw(force) {
         gz.drawMode = force === undefined ? !gz.drawMode : force;
         if (gz.drawMode) { gz.safeMode = false; safeBtn.classList.remove("on"); }
