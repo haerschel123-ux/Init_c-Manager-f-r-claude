@@ -1404,32 +1404,72 @@ ${kids}
         gz.map.on("mousemove", (e) => {
           coordEl.textContent = "X " + Math.round(e.latlng.lng) + " | Z " + Math.round(e.latlng.lat);
         });
+        /* Ctrl-/Cmd-Klick auf die Karte = SafePosition (Desktop-Komfort). */
         gz.map.on("click", (e) => {
-          if (gz.safeMode || e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
+          if (e.originalEvent.ctrlKey || e.originalEvent.metaKey)
             addSafe(Math.round(e.latlng.lng), Math.round(e.latlng.lat));
-            if (gz.safeMode) { gz.safeMode = false; safeBtn.classList.remove("on"); }
-          }
         });
-        /* Custom Kreis-Zeichnen */
-        let drawing = null;
-        gz.map.on("mousedown", (e) => {
-          if (!gz.drawMode) return;
-          const circle = L.circle(e.latlng, { radius: 1, color: "#ff6b35",
-            fillColor: "#ffe14d", fillOpacity: 0.3, weight: 2 }).addTo(gz.drawGroup);
-          drawing = { x: Math.round(e.latlng.lng), z: Math.round(e.latlng.lat),
-                      center: e.latlng, circle };
-        });
-        gz.map.on("mousemove", (e) => {
-          if (drawing) drawing.circle.setRadius(Math.max(1, gz.map.distance(drawing.center, e.latlng)));
-        });
-        gz.map.on("mouseup", (e) => {
-          if (!drawing) return;
-          const r = Math.round(gz.map.distance(drawing.center, e.latlng));
-          gz.drawGroup.removeLayer(drawing.circle);
-          const d = drawing; drawing = null;
-          toggleDraw(false);
-          if (r >= 5) addZone(d.x, d.z, r, true);
-        });
+        /* Kreis-Zeichnen & SafePosition-Tippen — Pointer-Events (funktioniert
+           mit Maus UND Touch/Handy; Leaflet-Map-Events feuern auf Touch nicht).
+           Einmalig an den (stabilen) Karten-Container gebunden; liest gz.map
+           dynamisch. */
+        if (!gz._drawBound) {
+          gz._drawBound = true;
+          const toLL = (ev) => {
+            const r = mapEl.getBoundingClientRect();
+            return gz.map.containerPointToLatLng(
+              L.point(ev.clientX - r.left, ev.clientY - r.top));
+          };
+          const finish = (ev) => {
+            if (gz._drawing) {
+              const d = gz._drawing; gz._drawing = null;
+              ev.preventDefault();
+              const r = Math.round(gz.map.distance(d.center, toLL(ev)));
+              gz.drawGroup.removeLayer(d.circle);
+              try { mapEl.releasePointerCapture(ev.pointerId); } catch (_) {}
+              if (r >= 5) { toggleDraw(false); addZone(d.x, d.z, r, true); }
+              return;
+            }
+            if (gz._safeDown) {
+              const s = gz._safeDown; gz._safeDown = null;
+              ev.preventDefault();
+              try { mapEl.releasePointerCapture(ev.pointerId); } catch (_) {}
+              if (Math.hypot(ev.clientX - s.sx, ev.clientY - s.sy) < 14) {
+                const ll = toLL(ev);
+                addSafe(Math.round(ll.lng), Math.round(ll.lat));
+                toggleSafe(false);
+              }
+            }
+          };
+          mapEl.addEventListener("pointerdown", (ev) => {
+            if (!gz.map || (ev.button && ev.button !== 0)) return;
+            if (gz.drawMode) {
+              ev.preventDefault();
+              const ll = toLL(ev);
+              const circle = L.circle(ll, { radius: 1, color: "#ff6b35",
+                fillColor: "#ffe14d", fillOpacity: 0.3, weight: 2 }).addTo(gz.drawGroup);
+              gz._drawing = { x: Math.round(ll.lng), z: Math.round(ll.lat),
+                              center: ll, circle };
+              try { mapEl.setPointerCapture(ev.pointerId); } catch (_) {}
+            } else if (gz.safeMode) {
+              ev.preventDefault();
+              gz._safeDown = { sx: ev.clientX, sy: ev.clientY };
+              try { mapEl.setPointerCapture(ev.pointerId); } catch (_) {}
+            }
+          });
+          mapEl.addEventListener("pointermove", (ev) => {
+            if (!gz.map) return;
+            const ll = toLL(ev);
+            coordEl.textContent = "X " + Math.round(ll.lng) + " | Z " + Math.round(ll.lat);
+            if (gz._drawing) {
+              ev.preventDefault();
+              gz._drawing.circle.setRadius(
+                Math.max(1, gz.map.distance(gz._drawing.center, ll)));
+            }
+          });
+          mapEl.addEventListener("pointerup", finish);
+          mapEl.addEventListener("pointercancel", finish);
+        }
         applyToggles();
         [30, 150, 400].forEach((ms) => setTimeout(() => {
           if (gz.map) gz.map.invalidateSize();
