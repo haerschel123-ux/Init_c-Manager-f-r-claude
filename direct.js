@@ -707,6 +707,20 @@ const DirectMode = (() => {
         requireCfg();
         return { whitelist: await nitradoSetList("whitelist", body.action, body.name) };
 
+      case "/api/feeds/config":
+        // Direkt-Feeds (Logs lesen + Webhooks posten) brauchen einen
+        // Dauerprozess + FTP — das geht nur in der PC-Version (server.py),
+        // nicht im reinen Browser/Handy-Modus.
+        if (body) throw new Error("Direkt-Feeds laufen nur in der PC-Version " +
+          "(server.py, Dauerbetrieb). Im Handy-Modus stattdessen die Bot-Dateien " +
+          "herunterladen und den Bot nutzen.");
+        return { enabled: false, poll_interval: 15, webhooks: {},
+                 supported: false, status: { running: false, last_error: "",
+                 last_poll: null, log_dir: null, posted: 0 } };
+
+      case "/api/feeds/test":
+        throw new Error("Webhook-Test geht nur in der PC-Version (server.py).");
+
       default:
         throw new Error("Unbekannte Funktion: " + route);
     }

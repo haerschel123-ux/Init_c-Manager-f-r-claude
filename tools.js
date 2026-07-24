@@ -2248,6 +2248,87 @@ ${kids}
       else live.append(h("p", { class: "hint" },
         "Erst mit einem Nitrado-Server verbinden (Zahnrad oben rechts), " +
         "dann sind Banliste/Whitelist/Spieler verfügbar."));
+
+      /* ---- Bereich 4: Direkt-Feeds ohne Bot (server.py postet per Webhook) ---- */
+      const direct = h("div", { class: "grp" },
+        h("h4", {}, "4) Direkt-Feeds ohne Bot (PC-Tool postet selbst)"),
+        h("p", { class: "hint" },
+          "Ohne separaten Bot: Das PC-Tool (server.py) liest laufend die " +
+          "Server-Logs und postet jedes Ereignis per Discord-Webhook. In Discord " +
+          "je Channel einen Webhook anlegen (Kanal → Integrationen → Webhooks → " +
+          "Neu → URL kopieren) und hier je Feed eintragen. Läuft nur, solange " +
+          "server.py auf einem PC/Server im Dauerbetrieb läuft."));
+      const dStatus = h("p", { class: "hint", id: "fd-direct-status" }, "Lädt…");
+      const dEnabled = h("input", { type: "checkbox", id: "fd-direct-enabled" });
+      const dInterval = h("input", { type: "number", id: "fd-direct-interval",
+        value: "15", min: "5", style: "width:80px" });
+      const dRows = h("div", { id: "fd-direct-rows" });
+      direct.append(dStatus,
+        h("div", { class: "fd-row" },
+          h("label", {}, "Aktiv"), dEnabled,
+          h("span", { class: "hint" }, "Poll-Intervall (Sek.):"), dInterval),
+        dRows,
+        h("div", { class: "row" },
+          h("button", { class: "primary", onclick: () => saveDirect() }, "💾 Feeds speichern")));
+      form.append(direct);
+
+      async function loadDirect() {
+        let cfg;
+        try { cfg = await api("/api/feeds/config"); }
+        catch (e) { dStatus.textContent = "Direkt-Feeds nicht verfügbar: " + e.message; return; }
+        if (!cfg.supported) {
+          direct.querySelectorAll("input,button").forEach((el) => (el.disabled = true));
+          dStatus.textContent = "⚠️ Direkt-Feeds gibt es nur in der PC-Version " +
+            "(server.py). Im Handy-Modus die Bot-Dateien oben nutzen.";
+          return;
+        }
+        dEnabled.checked = !!cfg.enabled;
+        dInterval.value = cfg.poll_interval || 15;
+        dRows.innerHTML = "";
+        FEED_TYPES.forEach(([type, label]) => dRows.append(
+          h("div", { class: "fd-feedrow" },
+            h("span", { class: "fd-feedlabel" }, label),
+            h("input", { class: "fd-wh", "data-type": type, type: "url",
+              placeholder: "Discord-Webhook-URL",
+              value: (cfg.webhooks || {})[type] || "" }),
+            h("button", { class: "small",
+              onclick: (e) => testWebhook(e.target.previousSibling.value) }, "Test"))));
+        showStatus(cfg.status);
+      }
+      function showStatus(st) {
+        if (!st) return;
+        const parts = [st.running ? "🟢 läuft" : "⚪ aus"];
+        if (st.log_dir) parts.push("Log-Ordner: " + st.log_dir);
+        if (st.last_poll) parts.push("letzter Abruf: " +
+          new Date(st.last_poll * 1000).toLocaleTimeString());
+        if (st.posted) parts.push(st.posted + " gepostet");
+        if (st.last_error) parts.push("⚠️ " + st.last_error);
+        dStatus.textContent = parts.join(" · ");
+      }
+      async function saveDirect() {
+        const webhooks = {};
+        dRows.querySelectorAll(".fd-wh").forEach((inp) => {
+          const v = (inp.value || "").trim();
+          if (v) webhooks[inp.getAttribute("data-type")] = v;
+        });
+        try {
+          const res = await api("/api/feeds/config", {
+            enabled: dEnabled.checked,
+            poll_interval: parseInt(dInterval.value, 10) || 15,
+            webhooks,
+          });
+          showStatus(res.status);
+          toast("Feed-Einstellungen gespeichert.");
+        } catch (e) { toast("Speichern fehlgeschlagen: " + e.message, "error"); }
+      }
+      async function testWebhook(url) {
+        if (!url || !url.trim()) return toast("Bitte erst eine Webhook-URL eintragen.", "warn");
+        try {
+          await api("/api/feeds/test", { webhook: url.trim() });
+          toast("Test-Nachricht gesendet – schau in den Discord-Channel.");
+        } catch (e) { toast("Test fehlgeschlagen: " + e.message, "error"); }
+      }
+      loadDirect();
     },
   });
 
