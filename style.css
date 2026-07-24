@@ -400,6 +400,30 @@ button.small.on { background: var(--accent); border-color: var(--accent); color:
 .gz-modal input[type="number"] { width: 90px; }
 @media (max-width: 640px) { .gz-map { height: 360px; } }
 
+/* ---- Feeds-Tool (Discord-Bot) ---- */
+.fd-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.fd-row label { flex: 0 0 92px; color: var(--muted); }
+.fd-row input { flex: 1 1 auto; min-width: 0; }
+.fd-feedrow {
+  display: flex; align-items: center; gap: 10px; margin: 6px 0;
+}
+.fd-feedlabel { flex: 1 1 auto; }
+.fd-feedrow input { flex: 0 0 190px; max-width: 48%; }
+.fd-list {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 6px 10px; margin: 6px 0 12px; background: var(--bg2);
+}
+.fd-item {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 5px 2px; border-bottom: 1px solid var(--border);
+}
+.fd-item:last-child { border-bottom: none; }
+#tool-form h5 { margin: 12px 0 4px; }
+@media (max-width: 640px) {
+  .fd-feedrow input { flex-basis: 130px; }
+  .fd-row label { flex-basis: 74px; }
+}
+
 #staging-bar {
   flex: 0 0 auto;
   display: flex;

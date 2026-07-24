@@ -57,16 +57,8 @@ const DirectMode = (() => {
   }
 
   async function fileRead(path) {
-    let data;
-    try {
-      data = await nitrado(cfg.token, "GET",
-        `/services/${cfg.service_id}/gameservers/file_server/download`, { file: path });
-    } catch (e) {
-      // Nitrado meldet fehlende Dateien als 500 "File doesn't exist (anymore?)"
-      if (/doesn't exist|does not exist|no such file/i.test(e.message || ""))
-        throw new Error("Datei nicht gefunden: " + path);
-      throw e;
-    }
+    const data = await nitrado(cfg.token, "GET",
+      `/services/${cfg.service_id}/gameservers/file_server/download`, { file: path });
     const url = data.data && data.data.token && data.data.token.url;
     if (!url) throw new Error("Nitrado hat keine Download-URL geliefert.");
     let resp;
@@ -378,88 +370,33 @@ const DirectMode = (() => {
 
   /* ------------------------------------------------------------- Setup */
 
-  /* Alle Missionsordner (dayzOffline.*) finden. Sie liegen als Geschwister
-     im selben missions-Ordner, deshalb endet die Suche beim ersten Fund. */
-  async function findMissionDirs(token, serviceId, start, depth) {
+  async function findMissionDir(token, serviceId, start, depth) {
     let entries;
     try {
       entries = await fileList(token, serviceId, start);
     } catch (e) {
-      return [];
+      return null;
     }
     const dirs = entries.filter((e) => e.type === "dir");
-    const found = dirs
-      .filter((e) => (e.name || "").startsWith("dayzOffline."))
-      .map((e) => e.path || (start.replace(/\/$/, "") + "/" + e.name));
-    if (found.length) return found;
-    if (depth <= 0) return [];
+    for (const entry of dirs) {
+      if ((entry.name || "").startsWith("dayzOffline.")) {
+        return entry.path || (start.replace(/\/$/, "") + "/" + entry.name);
+      }
+    }
+    if (depth <= 0) return null;
     dirs.sort((a, b) => (a.name.includes("missions") ? -1 : 0) - (b.name.includes("missions") ? -1 : 0));
     for (const entry of dirs) {
       const path = entry.path || (start.replace(/\/$/, "") + "/" + entry.name);
-      const deeper = await findMissionDirs(token, serviceId, path, depth - 1);
-      if (deeper.length) return deeper;
+      const found = await findMissionDir(token, serviceId, path, depth - 1);
+      if (found) return found;
     }
-    return [];
-  }
-
-  /* Karten-Schlüssel (chernarusplus/enoch/sakhal) aus einem Missionspfad */
-  const mapKeyOf = (dir) => {
-    const m = /dayzoffline\.([a-z0-9_]+)/i.exec(dir || "");
-    return m ? m[1].toLowerCase() : "";
-  };
-
-  /* Aktive Mission aus den Nitrado-Serverdaten erkennen: zuerst in den
-     expliziten Einstellungen (settings.config) suchen, dann überall. */
-  function detectActiveMission(gs, missionDirs) {
-    let name = null;
-    const conf = (gs.settings && gs.settings.config) || {};
-    for (const key of Object.keys(conf)) {
-      const m = /dayzoffline\.[a-z0-9_]+/i.exec(String(conf[key] || ""));
-      if (m) { name = m[0]; break; }
-    }
-    if (!name) {
-      try {
-        const m = /dayzoffline\.[a-z0-9_]+/i.exec(JSON.stringify(gs));
-        if (m) name = m[0];
-      } catch (e) { /* dann eben nicht */ }
-    }
-    if (!name) return null;
-    const want = name.toLowerCase();
-    return missionDirs.find((d) =>
-      (d.split("/").pop() || "").toLowerCase() === want) || null;
-  }
-
-  /* Missionsordner zu einem Karten-Schlüssel. Sicherheit: gewechselt wird
-     nur, wenn der Ordner der Karte auf dem Server wirklich existiert. */
-  async function missionDirForMap(key) {
-    const want = "dayzoffline." + key.toLowerCase();
-    const match = (dirs) => (dirs || []).find((d) =>
-      (d.split("/").pop() || "").toLowerCase() === want);
-    let dir = match(cfg.mission_dirs);
-    if (dir) return dir;
-    // Liste fehlt (ältere Einrichtung): neben dem aktuellen Ordner nachsehen …
-    const parent = (cfg.mission_dir || "").split("/").slice(0, -1).join("/");
-    if (parent) {
-      const siblings = await findMissionDirs(cfg.token, cfg.service_id, parent, 0);
-      if (siblings.length) { cfg.mission_dirs = siblings; saveCfg(); }
-      dir = match(siblings);
-      if (dir) return dir;
-    }
-    // … sonst komplette Suche ab dem Spielordner
-    const all = await findMissionDirs(cfg.token, cfg.service_id, cfg.root_dir, 4);
-    if (all.length) { cfg.mission_dirs = all; saveCfg(); }
-    dir = match(all);
-    if (dir) return dir;
-    throw new Error("Auf dem Server wurde kein Missionsordner „dayzOffline." + key +
-                    "“ gefunden – diese Karte ist dort anscheinend nicht " +
-                    "installiert. Der bisherige Ordner bleibt aktiv.");
+    return null;
   }
 
   function state() {
     const configured = !!(cfg.token && cfg.mission_dir);
     const st = { configured, demo: false, direct: true,
-                 tile_url: cfg.tile_url || "",
-                 map: cfg.map || mapKeyOf(cfg.mission_dir) || "" };
+                 tile_url: cfg.tile_url || "", map: cfg.map || "" };
     if (configured) {
       st.mission_dir = cfg.mission_dir;
       st.root_dir = cfg.root_dir;
@@ -472,6 +409,61 @@ const DirectMode = (() => {
       throw new Error("Noch nicht eingerichtet. Bitte zuerst den Nitrado-API-" +
                       "Token eingeben und den Server auswählen (Zahnrad oben rechts).");
     }
+  }
+
+  /* ---------------------------------------- Discord-Bot / Nitrado-Settings */
+
+  // Feed-Typen des Discord-Bots – müssen zu LOG_TYPES in bot_44.py passen.
+  const BOT_FEED_TYPES = [
+    "killfeed", "damagefeed", "joinleave", "suicide", "chat", "adminlog",
+    "envdeath", "vehiclecrash", "basebuild", "loot", "connecting",
+    "shop_log", "economy_log", "status", "restart", "zone",
+  ];
+
+  function findSetting(settings, wantedKey) {
+    if (settings && typeof settings === "object") {
+      for (const [category, keys] of Object.entries(settings)) {
+        if (!keys || typeof keys !== "object") continue;
+        for (const [key, val] of Object.entries(keys)) {
+          if (String(key).toLowerCase() === wantedKey)
+            return { category: String(category), key: String(key),
+                     raw: String(val == null ? "" : val) };
+        }
+      }
+    }
+    return { category: "general", key: wantedKey, raw: "" };
+  }
+
+  const parseNames = (raw) =>
+    String(raw || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+
+  function applyNameAction(names, action, name) {
+    name = (name || "").trim();
+    const low = names.map((n) => n.toLowerCase());
+    if (action === "add") {
+      if (name && !low.includes(name.toLowerCase())) names.push(name);
+    } else if (action === "remove") {
+      names = names.filter((n) => n.toLowerCase() !== name.toLowerCase());
+    }
+    return names;
+  }
+
+  async function nitradoGameserver() {
+    const data = await nitrado(cfg.token, "GET",
+      `/services/${cfg.service_id}/gameservers`);
+    return (data.data && data.data.gameserver) || {};
+  }
+
+  async function nitradoSetList(kind, action, name) {
+    const wanted = kind === "banlist" ? "bans" : "whitelist";
+    // Erst frisch lesen – bei Fehler NICHT schreiben (sonst Liste weg).
+    const gs = await nitradoGameserver();
+    const s = findSetting(gs.settings || {}, wanted);
+    const names = applyNameAction(parseNames(s.raw), action, name);
+    await nitrado(cfg.token, "POST",
+      `/services/${cfg.service_id}/gameservers/settings`,
+      null, { category: s.category, key: s.key, value: names.join("\r\n") });
+    return names;
   }
 
   /* ------------------------------------------------------------ Routen */
@@ -506,19 +498,16 @@ const DirectMode = (() => {
           `/services/${body.service_id}/gameservers`);
         const gs = (gsData.data && gsData.data.gameserver) || {};
         const root = `/games/${gs.username}/noftp/${gs.game}`;
-        let missions = await findMissionDirs(body.token, body.service_id, root, 4);
-        if (!missions.length) missions = await findMissionDirs(body.token,
-          body.service_id, `/games/${gs.username}`, 4);
-        if (!missions.length) {
+        let mission = await findMissionDir(body.token, body.service_id, root, 4);
+        if (!mission) mission = await findMissionDir(body.token, body.service_id,
+          `/games/${gs.username}`, 4);
+        if (!mission) {
           throw new Error("Konnte den Missionsordner (dayzOffline.*) nicht " +
                           "automatisch finden. Ist das wirklich ein DayZ-Server?");
         }
-        // Aktive Karte des Servers erkennen – sonst den ersten Fund nehmen
-        const mission = detectActiveMission(gs, missions) || missions[0];
         cfg = { token: body.token, service_id: body.service_id, game: gs.game,
-                username: gs.username, root_dir: root,
-                mission_dir: mission, mission_dirs: missions,
-                map: mapKeyOf(mission), tile_url: cfg.tile_url || "" };
+                username: gs.username, root_dir: root, mission_dir: mission,
+                tile_url: cfg.tile_url || "" };
         saveCfg();
         return state();
       }
@@ -526,14 +515,7 @@ const DirectMode = (() => {
       case "/api/settings":
         // Nur mitgeschickte Felder ändern (Teil-Update)
         if ("tile_url" in body) cfg.tile_url = String(body.tile_url || "").trim();
-        if ("map" in body) {
-          const key = String(body.map || "").trim();
-          // Sicherheit: die Dateipfade folgen immer der Kartenwahl
-          if (key && cfg.token && cfg.mission_dir && key !== mapKeyOf(cfg.mission_dir)) {
-            cfg.mission_dir = await missionDirForMap(key);
-          }
-          cfg.map = key;
-        }
+        if ("map" in body) cfg.map = String(body.map || "").trim();
         saveCfg();
         return state();
 
@@ -671,6 +653,59 @@ const DirectMode = (() => {
           `/services/${cfg.service_id}/gameservers/stop`,
           null, { stop_message: "Stopp über DayZ-Server-Manager" });
         return { ok: true };
+
+      case "/api/bot/config": {
+        // Discord-IDs sind größer als JS-sichere Ganzzahlen – daher NICHT als
+        // Number parsen. Wir bauen den JSON-Text mit Platzhaltern und ersetzen
+        // sie am Ende durch die rohen Ziffern (unquoted = JSON-Zahl).
+        const guildIds = (body.guild_ids || [])
+          .map((g) => String(g).trim()).filter((g) => /^-?\d+$/.test(g));
+        const feeds = body.feeds || {};
+        const feedMap = {};
+        for (const [ft, ch] of Object.entries(feeds)) {
+          if (BOT_FEED_TYPES.includes(ft) && /^\d+$/.test(String(ch).trim()))
+            feedMap[ft] = "@@" + String(ch).trim() + "@@";
+        }
+        const config = {
+          bot_token: String(body.bot_token || "").trim(),
+          nitrado_token: cfg.token || "",
+          service_id: String(cfg.service_id || ""),
+          guild_ids: guildIds.length ? guildIds.map((g) => "@@" + g + "@@") : [0],
+          admin_role_name: String(body.admin_role_name || "DayZ Admin"),
+        };
+        const guilds = {};
+        for (const gid of guildIds) guilds[gid] = { ...feedMap };
+        const unquote = (obj) =>
+          JSON.stringify(obj, null, 2).replace(/"@@(-?\d+)@@"/g, "$1") + "\n";
+        return { config_text: unquote(config), guilds_text: unquote(guilds) };
+      }
+
+      case "/api/nitrado/overview": {
+        requireCfg();
+        const gs = await nitradoGameserver();
+        const query = gs.query || {};
+        let names = [];
+        if (Array.isArray(query.players)) {
+          names = query.players
+            .map((p) => (p && typeof p === "object")
+              ? (p.name || p.player || "") : String(p))
+            .filter(Boolean);
+        }
+        return {
+          banlist: parseNames(findSetting(gs.settings || {}, "bans").raw),
+          whitelist: parseNames(findSetting(gs.settings || {}, "whitelist").raw),
+          players: { current: query.player_current ?? null,
+                     max: query.player_max ?? null, names },
+        };
+      }
+
+      case "/api/nitrado/banlist":
+        requireCfg();
+        return { banlist: await nitradoSetList("banlist", body.action, body.name) };
+
+      case "/api/nitrado/whitelist":
+        requireCfg();
+        return { whitelist: await nitradoSetList("whitelist", body.action, body.name) };
 
       default:
         throw new Error("Unbekannte Funktion: " + route);

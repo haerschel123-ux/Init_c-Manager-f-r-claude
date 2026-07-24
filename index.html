@@ -70,8 +70,8 @@
     <button id="btn-map-save" class="primary">💾 Speichern</button>
     <button id="btn-map-save-restart">💾 Speichern &amp; Server neu starten</button>
     <p class="hint small-text">Änderungen wirken erst nach einem
-       <b>Server-Neustart</b>. Die Kartenwahl oben bestimmt auch, in
-       welchen Missionsordner gespeichert wird.</p>
+       Server-Neustart – Items/Teleport „live“ ohne Neustart ist auf
+       Konsolenservern technisch nicht möglich.</p>
   </aside>
   <div id="map"></div>
 </main>
@@ -134,20 +134,21 @@
       </div>
     </div>
     <div class="card info">
-      <h3>ℹ️ Wichtig zu wissen</h3>
+      <h3>ℹ️ Wichtig zu wissen (Konsolen-Server)</h3>
       <ul>
-        <li><b>Änderungen gelten erst nach einem Server-Neustart.</b>
-          Ablauf: bearbeiten → <b>💾 Speichern</b> → <b>🔄 Neustarten</b> –
-          dann ist alles im Spiel.</li>
-        <li>Die Tools ändern <b>nur das, was du eingibst</b> – der Rest der
-          Datei bleibt unangetastet. Die <b>🔍 Vorschau</b> zeigt dir vorher
-          jede Änderung als Diff.</li>
+        <li>Eine <b>init.c gibt es auf PS4/PS5/Xbox-Servern nicht</b> –
+          eigenes Scripting ist nur auf PC-Servern möglich. Dieses Tool zeigt
+          dir dafür <b>alle</b> Dateien, die wirklich auf deinem Server liegen
+          (auch die, die das Nitrado-Webinterface nicht anzeigt).</li>
+        <li><b>Spieler live teleportieren oder Items sofort spawnen</b> geht auf
+          Konsole nicht – dafür bräuchte es Server-Mods, die nur auf PC laufen.</li>
+        <li>Was geht: <b>Spawnpunkte</b>, <b>Events</b> (z.B. Heli-Crashes),
+          <b>Gebäude/Objekte</b> (Objekt-Spawner) und die komplette
+          <b>Loot-Tabelle</b> ändern. Nach dem Speichern einmal
+          <b>neustarten</b> – dann ist alles im Spiel.</li>
         <li>Vor jedem Speichern legt das Tool automatisch ein <b>Backup</b> an
           – am PC im Ordner <span class="mono">backups/</span>, am Handy im
           Browser (abrufbar unter ⚙️ → Backups).</li>
-        <li>Der Dateimanager zeigt <b>alle</b> Dateien, die wirklich auf
-          deinem Server liegen – auch die, die das Nitrado-Webinterface
-          nicht anzeigt.</li>
       </ul>
     </div>
   </div>
@@ -170,7 +171,7 @@
       </div>
       <p id="tool-desc" class="hint"></p>
       <div id="tool-form"></div>
-      <div class="btn-row">
+      <div class="btn-row" id="tool-actions">
         <button id="btn-tool-preview" class="primary">🔍 Vorschau</button>
       </div>
     </div>

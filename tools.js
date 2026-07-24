@@ -2090,6 +2090,167 @@ ${kids}
     },
   });
 
+  /* ============================================ 8. Feeds (Discord-Bot) */
+
+  /* Feed-Typen des Bots (bot_44.py LOG_TYPES) – Reihenfolge = Anzeige. */
+  const FEED_TYPES = [
+    ["killfeed", "☠️ Kills (PvP)"],
+    ["damagefeed", "🩸 Treffer / Damage"],
+    ["joinleave", "🟢 Join / Leave"],
+    ["suicide", "💀 Selbstmord"],
+    ["chat", "💬 In-Game Chat"],
+    ["adminlog", "🛡️ Admin-Log"],
+    ["envdeath", "☠️ Umwelttode"],
+    ["vehiclecrash", "🚗 Fahrzeug-Crashes"],
+    ["basebuild", "🏗️ Basis-Bau"],
+    ["loot", "🎒 Loot-Ereignisse"],
+    ["connecting", "🔌 Verbindungsversuche"],
+    ["shop_log", "🛒 Shop-Käufe"],
+    ["economy_log", "💰 Economy-Aktionen"],
+    ["status", "📊 Auto-Status-Embed"],
+    ["restart", "🔄 Restart-Ankündigungen"],
+    ["zone", "🛡️ Zonen-Pings"],
+  ];
+
+  function download(name, text) {
+    const a = h("a", { download: name,
+      href: URL.createObjectURL(new Blob([text], { type: "application/json" })) });
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  registry.push({
+    id: "feeds", icon: "📡", title: "Feeds (Discord-Bot)",
+    noPreview: true,
+    desc: "Discord-Bot einrichten: Bot-Token, Guild-ID und Feed→Channel " +
+          "als Bot-Dateien exportieren. Plus Live-Banliste, Whitelist und " +
+          "verbundene Spieler (aus Nitrado, direkt hier bearbeitbar).",
+    render(form) {
+      /* ---- Bereich 1: Bot-Konfiguration → Download ---- */
+      form.append(h("div", { class: "grp" },
+        h("h4", {}, "1) Discord-Bot verbinden"),
+        h("p", { class: "hint" },
+          "Bot-Token & Guild-ID eintragen, je Feed die Discord-Channel-ID " +
+          "(Entwicklermodus → Rechtsklick auf Channel → „ID kopieren“). Der " +
+          "im Tool verbundene Nitrado-Zugang wird automatisch mit übernommen."),
+        h("div", { class: "fd-row" }, h("label", {}, "Bot-Token"),
+          h("input", { id: "fd-token", type: "text", class: "fd-wide",
+            placeholder: "Discord-Bot-Token" })),
+        h("div", { class: "fd-row" }, h("label", {}, "Guild-ID(s)"),
+          h("input", { id: "fd-guild", type: "text",
+            placeholder: "z. B. 111111111111111111 (mehrere per Komma)" })),
+        h("div", { class: "fd-row" }, h("label", {}, "Admin-Rolle"),
+          h("input", { id: "fd-adminrole", type: "text", value: "DayZ Admin" }))));
+
+      const feedBox = h("div", { class: "grp" },
+        h("h4", {}, "2) Feeds → Discord-Channels"));
+      FEED_TYPES.forEach(([type, label]) => feedBox.append(
+        h("div", { class: "fd-feedrow" },
+          h("span", { class: "fd-feedlabel" }, label),
+          h("input", { class: "fd-feed", "data-type": type, type: "text",
+            inputmode: "numeric", placeholder: "Channel-ID (optional)" }))));
+      form.append(feedBox);
+
+      form.append(h("div", { class: "row" },
+        h("button", { class: "primary", onclick: () => downloadBotFiles() },
+          "⬇️ Bot-Dateien herunterladen"),
+        h("span", { class: "hint" },
+          "config.json + guilds_config.json neben bot_44.py legen, Bot starten.")));
+
+      async function downloadBotFiles() {
+        const guildRaw = ($("#fd-guild").value || "").trim();
+        if (!guildRaw) return toast("Bitte mindestens eine Guild-ID angeben.", "warn");
+        const feeds = {};
+        form.querySelectorAll(".fd-feed").forEach((inp) => {
+          const v = (inp.value || "").trim();
+          if (v) feeds[inp.getAttribute("data-type")] = v;
+        });
+        try {
+          const res = await api("/api/bot/config", {
+            bot_token: ($("#fd-token").value || "").trim(),
+            guild_ids: guildRaw.split(",").map((s) => s.trim()).filter(Boolean),
+            admin_role_name: ($("#fd-adminrole").value || "").trim() || "DayZ Admin",
+            feeds,
+          });
+          download("config.json", res.config_text);
+          download("guilds_config.json", res.guilds_text);
+          toast("Bot-Dateien heruntergeladen.");
+        } catch (e) {
+          toast("Konnte Bot-Dateien nicht erzeugen: " + e.message, "error");
+        }
+      }
+
+      /* ---- Bereich 2: Live-Panel (Banliste / Whitelist / Spieler) ---- */
+      const live = h("div", { class: "grp" },
+        h("h4", {}, "3) Live: Banliste, Whitelist & Spieler"));
+      const banBox = h("div", { class: "fd-list" });
+      const wlBox = h("div", { class: "fd-list" });
+      const playerBox = h("div", { class: "fd-list" });
+      const banAdd = h("input", { type: "text", placeholder: "Spielername" });
+      const wlAdd = h("input", { type: "text", placeholder: "Spielername" });
+
+      live.append(
+        h("div", { class: "row" },
+          h("button", { class: "small", onclick: () => refresh() }, "🔄 Aktualisieren")),
+        h("h5", {}, "🔨 Banliste"), banBox,
+        h("div", { class: "row" }, banAdd,
+          h("button", { class: "small", onclick: () => act("banlist", "add", banAdd) }, "Bannen")),
+        h("h5", {}, "✅ Whitelist"), wlBox,
+        h("div", { class: "row" }, wlAdd,
+          h("button", { class: "small", onclick: () => act("whitelist", "add", wlAdd) }, "Hinzufügen")),
+        h("h5", {}, "👥 Verbundene Spieler"), playerBox);
+      form.append(live);
+
+      function renderList(box, kind, names) {
+        box.innerHTML = "";
+        if (!names.length) { box.append(h("p", { class: "hint" }, "— leer —")); return; }
+        names.forEach((nm) => box.append(h("div", { class: "fd-item" },
+          h("span", {}, nm),
+          h("button", { class: "small danger",
+            onclick: () => act(kind, "remove", null, nm) }, "✕"))));
+      }
+      function renderPlayers(p) {
+        playerBox.innerHTML = "";
+        const head = "Online: " + (p.current ?? "?") +
+          (p.max != null ? " / " + p.max : "");
+        playerBox.append(h("div", { class: "fd-item" }, h("b", {}, head)));
+        (p.names || []).forEach((nm) =>
+          playerBox.append(h("div", { class: "fd-item" }, h("span", {}, nm))));
+        if (!(p.names || []).length)
+          playerBox.append(h("p", { class: "hint" },
+            "Keine Spielernamen von Nitrado verfügbar (nur Anzahl)."));
+      }
+      async function refresh() {
+        try {
+          const o = await api("/api/nitrado/overview");
+          renderList(banBox, "banlist", o.banlist || []);
+          renderList(wlBox, "whitelist", o.whitelist || []);
+          renderPlayers(o.players || {});
+        } catch (e) {
+          toast("Nitrado-Daten nicht abrufbar: " + e.message, "error");
+        }
+      }
+      async function act(kind, action, inputEl, nameArg) {
+        const name = nameArg != null ? nameArg : (inputEl.value || "").trim();
+        if (!name) return toast("Bitte einen Namen angeben.", "warn");
+        try {
+          const res = await api("/api/nitrado/" + kind, { action, name });
+          const names = res[kind] || [];
+          if (kind === "banlist") renderList(banBox, kind, names);
+          else renderList(wlBox, kind, names);
+          if (inputEl) inputEl.value = "";
+          toast(action === "add" ? name + " hinzugefügt." : name + " entfernt.");
+        } catch (e) {
+          toast("Aktion fehlgeschlagen: " + e.message, "error");
+        }
+      }
+
+      if (App.state && App.state.configured) refresh();
+      else live.append(h("p", { class: "hint" },
+        "Erst mit einem Nitrado-Server verbinden (Zahnrad oben rechts), " +
+        "dann sind Banliste/Whitelist/Spieler verfügbar."));
+    },
+  });
+
   /* ======================================================== UI-Aufbau */
 
   let initialized = false;
@@ -2137,6 +2298,8 @@ ${kids}
     $("#tool-panel").classList.remove("hidden");
     $("#tool-title").textContent = tool.icon + " " + tool.title;
     $("#tool-desc").textContent = tool.desc;
+    // Tools ohne Datei-Vorschau (z. B. „Feeds") blenden die Aktionsleiste aus.
+    $("#tool-actions").classList.toggle("hidden", !!tool.noPreview);
     const form = $("#tool-form");
     form.innerHTML = "";
     await ensureDatalists();
